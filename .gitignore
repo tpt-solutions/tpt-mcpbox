@@ -1,0 +1,27 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+*.pdb
+
+# Secrets & local env
+.env
+.env.*
+!.env.example
+
+# Wasm build output
+*.wasm
+!tests/**/fixtures/*.wasm
+
+# OCI / tool cache
+/.mcpbox/
+/cache/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Docs build
+/book/

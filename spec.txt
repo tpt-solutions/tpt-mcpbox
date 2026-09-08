@@ -1,0 +1,64 @@
+Design Spec 1: tpt-mcpbox (Secure MCP Hub & Wasm Runtime)
+Status: Proposed
+Target Release: Q3 2026
+Primary Language: Rust
+1. Executive Summary
+tpt-mcpbox is a local-first, zero-trust proxy and execution runtime for the Model Context Protocol (MCP). It acts as a secure gateway between AI agents and external tools, enforcing strict capability-based security policies and executing untrusted tool logic inside isolated WebAssembly (Wasm) sandboxes.
+2. Problem Statement
+As AI agents transition to autonomous tool-use via MCP, enterprises face a critical security bottleneck: agents executing arbitrary code or accessing sensitive local resources (filesystem, network, secrets) without guardrails. Existing MCP implementations rely on the host OS for security, which is too permissive and prone to prompt-injection-induced privilege escalation.
+3. Goals & Non-Goals
+Goals:
+Provide a single-binary local proxy that routes MCP JSON-RPC requests to tool executors.
+Enforce fine-grained, capability-based security (e.g., Tool A can read /tmp, Tool B can only access api.github.com).
+Execute tool logic in isolated Wasm sandboxes using WASI Preview 2.
+Maintain < 5ms overhead per tool invocation.
+Non-Goals:
+Managing remote, cloud-hosted MCP servers (this tool is strictly local-first).
+Providing the LLM inference engine (it is transport/security layer only).
+4. Architecture
+
+[ AI Agent / LLM ] 
+       │ (MCP JSON-RPC over stdio/SSE)
+       ▼
+┌─────────────────────────────────────────────┐
+│               tpt-mcpbox                    │
+│  ┌───────────────┐    ┌──────────────────┐  │
+│  │ Policy Engine │◄──►│  Request Router  │  │
+│  │ (OPA/Rego)    │    │  & Rate Limiter  │  │
+│  └───────────────┘    └────────┬─────────┘  │
+│                                │            │
+│  ┌─────────────────────────────▼──────────┐ │
+│  │         Wasm Runtime Pool              │ │
+│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐  │ │
+│  │  │ Wasm A  │ │ Wasm B  │ │ Wasm C  │  │ │
+│  │  │(GitHub) │ │(Filesys)│ │(Custom) │  │ │
+│  │  └─────────┘ └─────────┘ └─────────┘  │ │
+│  └────────────────────────────────────────┘ │
+└─────────────────────────────────────────────┘
+
+5. Key Components
+Policy Engine: Evaluates incoming tool calls against user-defined policies (written in Rego or a simplified YAML DSL). Blocks calls that violate constraints.
+Wasm Runtime Pool: Uses wasmtime to maintain a warm pool of Wasm instances. Tools are compiled to .wasm modules.
+WASI Capability Mapper: Maps host resources to Wasm virtual filesystems and network sockets based on the Policy Engine's allowlist.
+6. Security Model
+Zero-Trust Execution: No tool has access to the host filesystem or network by default.
+Secrets Injection: API keys are never passed as environment variables to the Wasm module. The proxy intercepts outbound HTTP requests and injects headers at the proxy layer.
+Resource Limits: Hard limits on Wasm memory and execution time to prevent runaway agents.
+7. Configuration Example
+
+# tpt-mcpbox.yaml
+tools:
+  - name: github_search
+    wasm_path: ./tools/github.wasm
+    capabilities:
+      network: ["api.github.com"]
+      memory_limit: "64MB"
+    secrets:
+      - GITHUB_TOKEN
+  - name: local_files
+    wasm_path: ./tools/fs.wasm
+    capabilities:
+      filesystem: 
+        read: ["./workspace/**"]
+        write: ["./workspace/output/**"]
+
