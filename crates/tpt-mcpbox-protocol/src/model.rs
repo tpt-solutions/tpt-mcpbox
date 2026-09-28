@@ -14,7 +14,11 @@ use crate::shared::{Experimental, Implementation, Role};
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolsCapability {
     /// Whether the server emits `notifications/tools/list_changed`.
-    #[serde(default, rename = "listChanged", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "listChanged",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub list_changed: Option<bool>,
 }
 
@@ -25,7 +29,11 @@ pub struct ResourcesCapability {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscribe: Option<bool>,
     /// Whether the server emits `notifications/resources/list_changed`.
-    #[serde(default, rename = "listChanged", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "listChanged",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub list_changed: Option<bool>,
 }
 
@@ -33,7 +41,11 @@ pub struct ResourcesCapability {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PromptsCapability {
     /// Whether the server emits `notifications/prompts/list_changed`.
-    #[serde(default, rename = "listChanged", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "listChanged",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub list_changed: Option<bool>,
 }
 
@@ -102,7 +114,11 @@ impl ServerCapabilities {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RootsCapability {
     /// Whether the client emits `notifications/roots/list_changed`.
-    #[serde(default, rename = "listChanged", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "listChanged",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub list_changed: Option<bool>,
 }
 
@@ -223,7 +239,11 @@ pub struct CreateMessageParams {
     /// Conversation to continue.
     pub messages: Vec<SamplingMessage>,
     /// Model preference.
-    #[serde(default, rename = "modelPreferences", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "modelPreferences",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub model_preferences: Option<SamplingModelPreferences>,
     /// System prompt for this call only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -235,7 +255,11 @@ pub struct CreateMessageParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     /// Opaque stop sequences.
-    #[serde(default, rename = "stopSequences", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "stopSequences",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub stop_sequences: Option<Vec<String>>,
 }
 
@@ -250,7 +274,11 @@ pub struct CreateMessageResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Why sampling stopped.
-    #[serde(default, rename = "stopReason", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "stopReason",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub stop_reason: Option<String>,
 }
 

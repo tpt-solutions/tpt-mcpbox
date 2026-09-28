@@ -1,0 +1,16 @@
+# Default owners for everything in the repository.
+* @tpt-solutions/maintainers
+
+# Security-sensitive components need explicit review.
+/crates/tpt-mcpbox-policy/   @tpt-solutions/maintainers @tpt-solutions/security
+/crates/tpt-mcpbox-runtime/  @tpt-solutions/maintainers @tpt-solutions/security
+/crates/tpt-mcpbox-config/   @tpt-solutions/maintainers @tpt-solutions/security
+/crates/tpt-mcpbox-protocol/  @tpt-solutions/maintainers
+
+# CI and supply-chain policy.
+/.github/                    @tpt-solutions/maintainers @tpt-solutions/security
+/deny.toml                   @tpt-solutions/maintainers @tpt-solutions/security
+/Cargo.lock                  @tpt-solutions/maintainers @tpt-solutions/security
+
+# Documentation.
+/docs/                       @tpt-solutions/maintainers

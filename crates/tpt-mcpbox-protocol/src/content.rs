@@ -136,17 +136,22 @@ pub struct ResourceLink {
 
 /// A single content block inside a tool result, prompt message or resource.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type")]
 pub enum Content {
     /// Text block.
+    #[serde(rename = "text")]
     Text(TextContent),
     /// Image block.
+    #[serde(rename = "image")]
     Image(ImageContent),
     /// Audio block.
+    #[serde(rename = "audio")]
     Audio(AudioContent),
     /// Embedded resource body.
+    #[serde(rename = "resource")]
     Resource(ResourceContents),
     /// Link to a resource.
+    #[serde(rename = "resource_link")]
     ResourceLink(ResourceLink),
 }
 
@@ -219,7 +224,8 @@ mod tests {
 
     #[test]
     fn resource_contents_are_untagged() {
-        let json = r#"{"type":"resource","uri":"file:///a.txt","mimeType":"text/plain","text":"body"}"#;
+        let json =
+            r#"{"type":"resource","uri":"file:///a.txt","mimeType":"text/plain","text":"body"}"#;
         let content: Content = serde_json::from_str(json).expect("parses");
         let Content::Resource(ResourceContents::Text(text)) = &content else {
             panic!("expected embedded text resource, got {content:?}");

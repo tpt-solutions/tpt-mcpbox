@@ -26,7 +26,11 @@ pub struct Implementation {
     /// Version string.
     pub version: String,
     /// Optional homepage / documentation URL.
-    #[serde(default, rename = "websiteUrl", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "websiteUrl",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub website_url: Option<String>,
 }
 
@@ -76,7 +80,11 @@ pub struct Annotations {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<f32>,
     /// Last modification time, milliseconds since the Unix epoch.
-    #[serde(default, rename = "lastModified", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "lastModified",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub last_modified: Option<i64>,
 }
 
@@ -94,7 +102,11 @@ pub struct Page<T> {
     /// Items in this page.
     pub items: Vec<T>,
     /// Cursor to pass back for the next page; absent on the last page.
-    #[serde(default, rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "nextCursor",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub next_cursor: Option<String>,
 }
 
@@ -136,19 +148,26 @@ mod tests {
 
     #[test]
     fn implementation_serializes_only_required_fields() {
-        let json = serde_json::to_string(&Implementation::new("tpt-mcpbox", "0.1.0")).expect("serializes");
+        let json =
+            serde_json::to_string(&Implementation::new("tpt-mcpbox", "0.1.0")).expect("serializes");
         assert_eq!(json, r#"{"name":"tpt-mcpbox","version":"0.1.0"}"#);
     }
 
     #[test]
     fn roles_use_lowercase_on_the_wire() {
-        assert_eq!(serde_json::to_string(&Role::Assistant).expect("serializes"), "\"assistant\"");
+        assert_eq!(
+            serde_json::to_string(&Role::Assistant).expect("serializes"),
+            "\"assistant\""
+        );
     }
 
     #[test]
     fn pages_omit_the_cursor_when_final() {
         let page: Page<u8> = Page::single(vec![1, 2]);
-        assert_eq!(serde_json::to_string(&page).expect("serializes"), r#"{"items":[1,2]}"#);
+        assert_eq!(
+            serde_json::to_string(&page).expect("serializes"),
+            r#"{"items":[1,2]}"#
+        );
         assert!(!page.has_more());
     }
 

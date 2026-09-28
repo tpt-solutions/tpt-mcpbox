@@ -88,7 +88,10 @@ pub fn progress_notification(
 
 /// Build a `notifications/cancelled` payload.
 #[must_use]
-pub fn cancelled_notification(request_id: impl Into<Id>, reason: impl Into<String>) -> Notification {
+pub fn cancelled_notification(
+    request_id: impl Into<Id>,
+    reason: impl Into<String>,
+) -> Notification {
     Notification::new(utilities::CANCELLED).with_params(CancelledParams {
         request_id: request_id.into(),
         reason: Some(reason.into()),
@@ -98,8 +101,7 @@ pub fn cancelled_notification(request_id: impl Into<Id>, reason: impl Into<Strin
 /// Build a `logging/setLevel` request.
 #[must_use]
 pub fn set_level_request(id: impl Into<Id>, level: LoggingLevel) -> crate::jsonrpc::Request {
-    crate::jsonrpc::Request::new(id, utilities::SET_LEVEL)
-        .with_params(SetLevelRequest { level })
+    crate::jsonrpc::Request::new(id, utilities::SET_LEVEL).with_params(SetLevelRequest { level })
 }
 
 #[cfg(test)]

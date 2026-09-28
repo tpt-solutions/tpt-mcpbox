@@ -26,16 +26,32 @@ pub struct ToolAnnotations {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// The tool does not modify its environment.
-    #[serde(default, rename = "readOnlyHint", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "readOnlyHint",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub read_only_hint: Option<bool>,
     /// The tool may perform destructive updates.
-    #[serde(default, rename = "destructiveHint", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "destructiveHint",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub destructive_hint: Option<bool>,
     /// Repeating a call with the same arguments has no additional effect.
-    #[serde(default, rename = "idempotentHint", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "idempotentHint",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub idempotent_hint: Option<bool>,
     /// The tool may interact with an open world (e.g. the network).
-    #[serde(default, rename = "openWorldHint", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "openWorldHint",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub open_world_hint: Option<bool>,
 }
 
@@ -54,7 +70,11 @@ pub struct Tool {
     #[serde(rename = "inputSchema")]
     pub input_schema: Value,
     /// JSON Schema describing the structured result, when the tool provides one.
-    #[serde(default, rename = "outputSchema", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "outputSchema",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub output_schema: Option<Value>,
     /// Behavioural hints.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -63,7 +83,11 @@ pub struct Tool {
 
 impl Tool {
     /// Build a tool with an explicit JSON Schema document.
-    pub fn new(name: impl Into<String>, description: impl Into<String>, input_schema: Value) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        input_schema: Value,
+    ) -> Self {
         Self {
             name: name.into(),
             title: None,
@@ -97,7 +121,11 @@ pub struct ListToolsResult {
     /// Tools visible to this session.
     pub tools: Vec<Tool>,
     /// Cursor for the next page, when more remain.
-    #[serde(default, rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "nextCursor",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub next_cursor: Option<String>,
 }
 
@@ -160,7 +188,11 @@ pub struct CallToolResult {
     /// Content blocks returned by the tool.
     pub content: Vec<Content>,
     /// Machine-readable result, when the tool defines `outputSchema`.
-    #[serde(default, rename = "structuredContent", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "structuredContent",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub structured_content: Option<Value>,
     /// `true` when the tool itself failed.
     #[serde(default, rename = "isError", skip_serializing_if = "Option::is_none")]
@@ -259,7 +291,8 @@ mod tests {
     #[test]
     fn call_request_requires_a_name() {
         assert!(
-            serde_json::from_value::<CallToolRequest>(serde_json::json!({"arguments": {}})).is_err()
+            serde_json::from_value::<CallToolRequest>(serde_json::json!({"arguments": {}}))
+                .is_err()
         );
     }
 

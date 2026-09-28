@@ -19,22 +19,26 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::error::{ProtocolError, Result};
 use crate::jsonrpc::{
-    ClientMessage, Error, ErrorCode, Id, Notification, Request, Response, ServerMessage,
+    ClientMessage, ErrorCode, Id, Notification, Request, Response, ServerMessage,
 };
 use crate::method;
-use crate::model::{CreateMessageParams, CreateMessageResult, ElicitParams, ElicitResult, InitializeParams, ListRootsResult};
-use crate::session::{Session, SessionState};
+use crate::model::{
+    CreateMessageParams, CreateMessageResult, ElicitParams, ElicitResult, InitializeParams,
+    ListRootsResult,
+};
+use crate::session::Session;
 use crate::utilities::SetLevelRequest;
 
 /// Default time budget for a server → agent request.
 pub const DEFAULT_CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Boxed future returned by [`Handler::handle`].
-pub type HandlerFuture<'a> = Pin<Box<dyn Future<Output = Result<Option<ServerMessage>>> + Send + 'a>>;
+pub type HandlerFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<ServerMessage>>> + Send + 'a>>;
 
 /// Business logic for one session.
 pub trait Handler: Send + Sync + 'static {
@@ -65,18 +69,26 @@ impl Default for DispatcherOptions {
     }
 }
 
-/// Routes inbound messages and correlates server → agent requests.
+/// Routes inbound messages and correlates server -> agent requests.
 ///
 /// Outbound traffic is pushed to the channel returned by [`Dispatcher::new`];
 /// the owning transport is responsible for framing it onto a writer (stdio) or
 /// an SSE stream (HTTP).
-#[derive(Debug)]
 pub struct Dispatcher {
     session: Arc<Session>,
     handler: Arc<dyn Handler>,
     outbound: mpsc::UnboundedSender<ServerMessage>,
     pending: Mutex<HashMap<Id, oneshot::Sender<Response>>>,
     options: DispatcherOptions,
+}
+
+impl std::fmt::Debug for Dispatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Dispatcher")
+            .field("session", &self.session.id().to_string())
+            .field("options", &self.options)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Dispatcher {
@@ -140,6 +152,28 @@ impl Dispatcher {
         self.emit(ServerMessage::Notification(notification))
     }
 
+    /// Dispatch one inbound message.
+    ///
+    /// Requests produce a [`ServerMessage::Response`]; notifications and
+    /// responses to server -> agent requests produce nothing to send back.
+    /// Handlers never see protocol-level failures: they are converted into
+    /// well-formed JSON-RPC errors here.
+    pub async fn dispatch(&self, message: ClientMessage) -> Option<ServerMessage> {
+        match message {
+            ClientMessage::Request(request) => {
+                Some(ServerMessage::Response(self.route_request(request).await))
+            }
+            ClientMessage::Notification(notification) => {
+                self.route_notification(notification).await;
+                None
+            }
+            ClientMessage::Response(response) => {
+                self.complete_pending(response).await;
+                None
+            }
+        }
+    }
+
     /// Dispatch a raw payload that may be a single message or a batch.
     ///
     /// Returns the responses produced for the requests in `payload`, in the
@@ -197,10 +231,14 @@ impl Dispatcher {
             method::lifecycle::INITIALIZE => {
                 let params: InitializeParams = request.parse_params()?;
                 let result = self.session.negotiate(params).await?;
-                Ok(Some(ServerMessage::Response(Response::success(request.id, result))))
+                Ok(Some(ServerMessage::Response(Response::success_serde(
+                    request.id, result,
+                )?)))
             }
             method::lifecycle::PING => {
-                self.session.ensure_servable(request.method.as_str()).await?;
+                self.session
+                    .ensure_servable(request.method.as_str())
+                    .await?;
                 Ok(Some(ServerMessage::Response(Response::success(
                     request.id,
                     Value::Object(Default::default()),
@@ -222,7 +260,9 @@ impl Dispatcher {
                 ))))
             }
             _ => {
-                self.session.ensure_servable(request.method.as_str()).await?;
+                self.session
+                    .ensure_servable(request.method.as_str())
+                    .await?;
                 self.handler.handle(&self.session, request).await
             }
         }
@@ -308,7 +348,10 @@ impl Dispatcher {
     /// # Errors
     /// Returns [`ProtocolError::State`] when the agent did not advertise
     /// `sampling`, plus the failures of [`Dispatcher::client_request`].
-    pub async fn create_message(&self, params: &CreateMessageParams) -> Result<CreateMessageResult> {
+    pub async fn create_message(
+        &self,
+        params: &CreateMessageParams,
+    ) -> Result<CreateMessageResult> {
         if !self.session.supports_sampling().await {
             return Err(ProtocolError::State(
                 "agent does not support `sampling/createMessage`".to_owned(),
@@ -350,7 +393,7 @@ mod tests {
     use super::*;
     use crate::jsonrpc::JSONRPC_VERSION;
     use crate::model::ServerCapabilities;
-    use crate::session::SessionConfig;
+    use crate::session::{SessionConfig, SessionState};
     use crate::shared::{Implementation, LATEST_PROTOCOL_VERSION};
     use crate::tools::{CallToolRequest, CallToolResult};
 
@@ -367,12 +410,21 @@ mod tests {
                 let result = match request.method.as_str() {
                     method::tools::CALL => {
                         let params: CallToolRequest = request.parse_params()?;
-                        CallToolResult::text(format!("called {}", params.name))
+                        serde_json::to_value(CallToolResult::text(format!(
+                            "called {}",
+                            params.name
+                        )))?
                     }
-                    method::tools::LIST => crate::tools::ListToolsResult::new(vec![]),
-                    _ => Value::Object(Default::default()),
+                    method::tools::LIST => {
+                        serde_json::to_value(crate::tools::ListToolsResult::new(vec![]))?
+                    }
+                    // Models the router: anything the handler does not know
+                    // becomes `-32601`.
+                    other => return Err(ProtocolError::MethodNotFound(other.to_owned())),
                 };
-                Ok(Some(ServerMessage::Response(Response::success(request.id, result))))
+                Ok(Some(ServerMessage::Response(Response::success(
+                    request.id, result,
+                ))))
             })
         }
     }
@@ -398,7 +450,8 @@ mod tests {
     }
 
     fn setup() -> (Arc<Dispatcher>, mpsc::UnboundedReceiver<ServerMessage>) {
-        let (dispatcher, outbound) = Dispatcher::new(build_session(), Arc::new(RecordingHandler::default()));
+        let (dispatcher, outbound) =
+            Dispatcher::new(build_session(), Arc::new(RecordingHandler::default()));
         (dispatcher, outbound)
     }
 
@@ -437,7 +490,9 @@ mod tests {
     async fn requests_before_initialization_are_refused() {
         let (dispatcher, _outbound) = setup();
         let responses = dispatcher
-            .dispatch_payload(serde_json::json!({"jsonrpc": "2.0", "id": 9, "method": "tools/list"}))
+            .dispatch_payload(
+                serde_json::json!({"jsonrpc": "2.0", "id": 9, "method": "tools/list"}),
+            )
             .await
             .expect("dispatch");
         let ServerMessage::Response(response) = &responses[0] else {
@@ -468,7 +523,9 @@ mod tests {
     async fn unknown_methods_report_method_not_found() {
         let (dispatcher, _outbound) = ready_dispatcher().await;
         let responses = dispatcher
-            .dispatch_payload(serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "tools/unknown"}))
+            .dispatch_payload(
+                serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "tools/unknown"}),
+            )
             .await
             .expect("dispatch");
         let ServerMessage::Response(response) = &responses[0] else {
@@ -541,7 +598,9 @@ mod tests {
     async fn notifications_do_not_produce_responses() {
         let (dispatcher, _outbound) = ready_dispatcher().await;
         let responses = dispatcher
-            .dispatch_payload(serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+            .dispatch_payload(
+                serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            )
             .await
             .expect("dispatch");
         assert!(responses.is_empty());
@@ -561,9 +620,13 @@ mod tests {
         };
         assert_eq!(request.method, method::client_features::ROOTS_LIST);
 
-        let roots = serde_json::json!({"roots": [{"uri": "file:///workspace", "name": "workspace"}]});
+        let roots =
+            serde_json::json!({"roots": [{"uri": "file:///workspace", "name": "workspace"}]});
         dispatcher
-            .dispatch(ClientMessage::Response(Response::success(request.id.clone(), roots)))
+            .dispatch(ClientMessage::Response(Response::success(
+                request.id.clone(),
+                roots,
+            )))
             .await;
 
         let result = task.await.expect("task joins").expect("roots");
@@ -580,7 +643,10 @@ mod tests {
             })
             .await
             .expect_err("must refuse");
-        assert!(error.to_string().contains("elicitation"), "unexpected: {error}");
+        assert!(
+            error.to_string().contains("elicitation"),
+            "unexpected: {error}"
+        );
         // Nothing was written to the agent.
         assert!(outbound.try_recv().is_err());
     }
@@ -605,7 +671,10 @@ mod tests {
             .await;
 
         let error = dispatcher.list_roots().await.expect_err("times out");
-        assert!(error.to_string().contains("did not answer"), "unexpected: {error}");
+        assert!(
+            error.to_string().contains("did not answer"),
+            "unexpected: {error}"
+        );
     }
 
     #[tokio::test]

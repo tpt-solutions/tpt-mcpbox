@@ -8,8 +8,6 @@
 //! JSON-RPC error object that must be returned to the peer, so handlers never
 //! have to build wire errors by hand.
 
-use serde_json::Value;
-
 /// Convenience alias used throughout the crate.
 pub type Result<T, E = ProtocolError> = std::result::Result<T, E>;
 
@@ -90,7 +88,7 @@ mod tests {
 
     #[test]
     fn json_errors_map_to_invalid_request() {
-        let err = ProtocolError::Json(serde_json::from_str::<Value>("{").unwrap_err());
+        let err = ProtocolError::Json(serde_json::from_str::<serde_json::Value>("{").unwrap_err());
         assert_eq!(err.to_json_rpc().code, ErrorCode::INVALID_REQUEST);
     }
 
@@ -111,7 +109,8 @@ mod tests {
 
     #[test]
     fn errors_keep_the_response_id() {
-        let err = crate::jsonrpc::Error::new(ErrorCode::INTERNAL_ERROR, "boom").with_id(Id::Number(7));
+        let err =
+            crate::jsonrpc::Error::new(ErrorCode::INTERNAL_ERROR, "boom").with_id(Id::Number(7));
         assert_eq!(err.id, Some(Id::Number(7)));
     }
 }

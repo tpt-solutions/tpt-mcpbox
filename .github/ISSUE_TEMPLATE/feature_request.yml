@@ -1,0 +1,63 @@
+name: Feature request
+description: Suggest a capability or policy behaviour for tpt-mcpbox
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Policy and sandbox proposals are welcome. Please describe the *authority*
+        the feature grants, not only the user experience: every feature here
+        widens what a tool or agent can reach.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today, and why does it block you?
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: Include the configuration surface (YAML schema) if applicable.
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - protocol / transports
+        - configuration
+        - policy engine
+        - Wasm runtime / capabilities
+        - upstream proxying
+        - routing / rate limits
+        - audit / metrics / logging
+        - CLI / developer experience
+        - SDK / tool authoring
+        - documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security considerations
+      description: |
+        What new authority does this create? Which default should deny?
+        Which new capability grants would you expect (fs, network, env, secrets)?
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      render: text

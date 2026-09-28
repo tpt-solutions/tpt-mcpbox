@@ -1,14 +1,10 @@
+# Clippy configuration. Rustc lint levels live in Cargo.toml
+# `[workspace.lints]`; only clippy-specific knobs belong here.
 msrv = "1.85"
 
-# Correctness lints that are valuable for a security-focused project and are not
-# enabled by default.
-correctness = { level = "warn", priority = -1 }
-
+# Process-wide state changes are a design smell in a daemon: configuration must
+# be explicit so reloads are observable.
 disallowed-methods = [
     { path = "std::env::set_var", reason = "process-wide state; use explicit configuration instead" },
     { path = "std::env::remove_var", reason = "process-wide state; use explicit configuration instead" },
 ]
-
-# `todo!`/`unimplemented!` indicate unfinished security-relevant work.
-todo = "warn"
-unimplemented = "warn"

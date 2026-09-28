@@ -1,0 +1,80 @@
+name: Bug report
+description: Something in tpt-mcpbox does not behave as documented
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. **Do not report security vulnerabilities here** --
+        see [SECURITY.md](https://github.com/tpt-solutions/tpt-mcpbox/blob/main/SECURITY.md).
+
+  - type: input
+    id: version
+    attributes:
+      label: tpt-mcpbox version
+      placeholder: "0.1.0 (commit abc1234)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - tpt-mcpbox-cli
+        - tpt-mcpbox-protocol (transports)
+        - tpt-mcpbox-config
+        - tpt-mcpbox-policy
+        - tpt-mcpbox-runtime
+        - tpt-mcpbox-proxy
+        - tpt-mcpbox-router
+        - tpt-mcpbox-audit
+        - documentation
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Minimal steps or commands. Redact tokens and host paths.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include the full error/panic text.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: client
+    attributes:
+      label: MCP client
+      placeholder: "Claude Code 1.2.3 / MCP Inspector / other"
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: Redacted `tpt-mcpbox.yaml` excerpt (remove secrets).
+      render: yaml
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and architecture
+      placeholder: "Windows 11 x86_64"

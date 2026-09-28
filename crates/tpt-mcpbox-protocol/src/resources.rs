@@ -63,7 +63,11 @@ pub struct ListResourcesResult {
     /// Resources in this page.
     pub resources: Vec<Resource>,
     /// Cursor for the next page.
-    #[serde(default, rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "nextCursor",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub next_cursor: Option<String>,
 }
 
@@ -74,7 +78,11 @@ pub struct ListResourceTemplatesResult {
     #[serde(rename = "resourceTemplates")]
     pub resource_templates: Vec<ResourceTemplate>,
     /// Cursor for the next page.
-    #[serde(default, rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "nextCursor",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub next_cursor: Option<String>,
 }
 
@@ -146,8 +154,9 @@ mod tests {
     #[test]
     fn subscribe_requires_a_uri() {
         assert!(serde_json::from_value::<SubscribeRequest>(serde_json::json!({})).is_err());
-        assert!(serde_json::from_value::<UnsubscribeRequest>(serde_json::json!({"uri": "x"}))
-            .is_ok());
+        assert!(
+            serde_json::from_value::<UnsubscribeRequest>(serde_json::json!({"uri": "x"})).is_ok()
+        );
     }
 
     #[test]

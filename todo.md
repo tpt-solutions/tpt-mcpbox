@@ -4,6 +4,14 @@ Local-first, zero-trust MCP proxy + WebAssembly tool runtime (Rust). See [spec.t
 
 **License:** dual `MIT OR Apache-2.0` — © TPT Solutions.
 
+**Naming:** every crate is `tpt-mcpbox-<name>`; the binary is `tpt-mcpbox`
+(so `tpt-mcpbox run`, `tpt-mcpbox audit verify`, ...). Guest crates
+(`tpt-mcpbox-sdk`, `tpt-mcpbox-tool-github`, `tpt-mcpbox-tool-fs`) live outside
+the host workspace and build for `wasm32-wasip2` with `cargo-component`.
+
+**Last updated:** 2026-09-29 — Phase 0 complete, Phase 1 (protocol core)
+implemented with 110 passing tests; Phases 2–12 outstanding.
+
 ---
 
 ## Scope decisions
@@ -26,44 +34,46 @@ Local-first, zero-trust MCP proxy + WebAssembly tool runtime (Rust). See [spec.t
 ### Technical defaults
 
 - Async runtime `tokio`. Wasm via `wasmtime` component model + WASI Preview 2; tools are Wasm **components** with a project-defined WIT world.
-- Cargo workspace crates: `mcpbox-cli` (binary), `mcpbox-protocol`, `mcpbox-config`, `mcpbox-policy`, `mcpbox-runtime`, `mcpbox-proxy`, `mcpbox-router`, `mcpbox-audit`, `mcpbox-sdk` (guest); plus `tools/github`, `tools/fs`.
-- MCP protocol revision: latest stable (`2025-06-18`) at implementation time.
+- Cargo workspace crates (host): `tpt-mcpbox-cli` (binary `tpt-mcpbox`), `tpt-mcpbox-protocol`, `tpt-mcpbox-config`, `tpt-mcpbox-policy`, `tpt-mcpbox-runtime`, `tpt-mcpbox-proxy`, `tpt-mcpbox-router`, `tpt-mcpbox-audit`. Guest crates (own workspaces, `workspace.exclude`): `crates/tpt-mcpbox-sdk`, `tools/tpt-mcpbox-tool-github`, `tools/tpt-mcpbox-tool-fs`.
+- MCP protocol revision: `2025-06-18` (see `tpt-mcpbox-protocol::shared::SUPPORTED_PROTOCOL_VERSIONS`).
 - CI: GitHub Actions. Release automation: `cargo-dist` + `release-plz`/`git-cliff`.
 
 ---
 
 ## Phase 0 — Bootstrap & Governance
 
-- [ ] `git init`; add `.gitignore` (Rust, `.env`, `target/`, `*.wasm` build output, OCI cache)
-- [ ] Create Cargo workspace with member crate skeletons listed above
-- [ ] `rust-toolchain.toml`; set and document MSRV
-- [ ] Dual licensing: `LICENSE-MIT`, `LICENSE-APACHE`, `license = "MIT OR Apache-2.0"` in every `Cargo.toml`, copyright "TPT Solutions"
-- [ ] `README.md` (overview, status, quickstart placeholder, license, contribution note)
-- [ ] `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md` (disclosure policy), `CHANGELOG.md`
-- [ ] `NOTICE` / per-file SPDX headers convention documented
-- [ ] CI: `fmt`, `clippy -D warnings`, `test`, `cargo-deny` (licenses/advisories/bans), `cargo-audit`
-- [ ] CI matrix across the 4 target platforms
-- [ ] `.editorconfig`, `rustfmt.toml`, `clippy.toml`
-- [ ] GitHub issue/PR templates, `CODEOWNERS`
-- [ ] `docs/architecture.md` — component diagram + data-flow from spec, kept current
+- [x] `git init`; add `.gitignore` (Rust, `.env`, `target/`, `*.wasm` build output, OCI cache)
+- [x] Create Cargo workspace with member crate skeletons listed above (guest crates deferred to Phases 7/8)
+- [x] `rust-toolchain.toml`; set and document MSRV (**1.85**, enforced by the CI `msrv` job)
+- [x] Dual licensing: `LICENSE-MIT`, `LICENSE-APACHE`, `license = "MIT OR Apache-2.0"` in every `Cargo.toml`, copyright "TPT Solutions"
+- [x] `README.md` (overview, status, quickstart placeholder, license, contribution note)
+- [x] `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md` (disclosure policy), `CHANGELOG.md`
+- [x] `NOTICE` / per-file SPDX headers convention documented
+- [x] CI: `fmt`, `clippy -D warnings`, `test`, `cargo-deny` (licenses/advisories/bans), `cargo-audit`
+- [x] CI matrix across the 4 target platforms (`cross` job: check on Linux x86_64, macOS arm64/x86_64, Windows x86_64; native test job on Linux/macOS/Windows)
+- [x] `.editorconfig`, `rustfmt.toml`, `clippy.toml`
+- [x] GitHub issue/PR templates, `CODEOWNERS`
+- [x] `docs/architecture.md` — component diagram + data-flow from spec, kept current
 
-## Phase 1 — MCP Protocol Core (`mcpbox-protocol`)
+## Phase 1 — MCP Protocol Core (`tpt-mcpbox-protocol`)
 
-- [ ] JSON-RPC 2.0 types: request / response / notification / batch / error codes
-- [ ] MCP message types: `initialize`/`initialized`, capabilities negotiation, `ping`, shutdown
-- [ ] `tools/list` (+ pagination), `tools/call`, `notifications/tools/list_changed`
-- [ ] `resources/list`, `resources/read`, `resources/templates/list`, `subscribe`/`unsubscribe`, `list_changed`, `updated`
-- [ ] `prompts/list`, `prompts/get`, `notifications/prompts/list_changed`
-- [ ] `completion/complete`
-- [ ] Utilities: progress notifications, `notifications/cancelled`, logging (`logging/setLevel`, `notifications/message`)
-- [ ] Client-feature passthrough plumbing: `roots`, `sampling/createMessage`, `elicitation` (routed to agent)
-- [ ] stdio transport (newline-delimited JSON, stderr for logs)
-- [ ] Streamable HTTP transport: `POST /mcp`, SSE response streams, `Mcp-Session-Id`, resumable event IDs, `GET` stream, `DELETE` session, origin validation
-- [ ] Content types: text / image / audio / embedded resource / resource links
-- [ ] Conformance test suite vs. the MCP schema; round-trip serde tests; fuzz the parser
+- [x] JSON-RPC 2.0 types: request / response / notification / batch / error codes (`jsonrpc`)
+- [x] MCP message types: `initialize`/`initialized`, capabilities negotiation, `ping`, shutdown (`model`, `session`)
+- [x] `tools/list` (+ pagination), `tools/call`, `notifications/tools/list_changed` (`tools`)
+- [x] `resources/list`, `resources/read`, `resources/templates/list`, `subscribe`/`unsubscribe`, `list_changed`, `updated` (`resources`)
+- [x] `prompts/list`, `prompts/get`, `notifications/prompts/list_changed` (`prompts`)
+- [x] `completion/complete` (`completion`)
+- [x] Utilities: progress notifications, `notifications/cancelled`, logging (`logging/setLevel`, `notifications/message`) (`utilities`)
+- [x] Client-feature passthrough plumbing: `roots`, `sampling/createMessage`, `elicitation` (routed to agent) (`server::Dispatcher`)
+- [x] stdio transport (newline-delimited JSON, stderr for logs)
+- [x] Streamable HTTP transport: `POST /mcp`, SSE response streams, `Mcp-Session-Id`, resumable event IDs, `GET` stream, `DELETE` session, origin validation
+- [x] Content types: text / image / audio / embedded resource / resource links (`content`)
+- [x] Round-trip serde tests across every module (110 tests: envelope, model, content, session, dispatcher, both transports)
+- [ ] Conformance test suite vs. the MCP JSON Schema (fixtures + schema validation)
+- [ ] Fuzz targets for the JSON-RPC parser (Phase 11; `cargo-fuzz` harness stubs to be added there)
 - [ ] Manual interop check against a real MCP client (Claude Code / MCP Inspector)
 
-## Phase 2 — Configuration & Secrets (`mcpbox-config`)
+## Phase 2 — Configuration & Secrets (`tpt-mcpbox-config`)
 
 - [ ] `tpt-mcpbox.yaml` model: `tools[]` (name, source, capabilities, secrets, limits, rate limits), `upstreams[]`, `server` (transports, bind), `policy`, `audit`, `metrics`, `logging`
 - [ ] Capability schema: `network` (domain allowlist), `filesystem.read/write` (glob lists), `memory_limit`, `time_limit`, `env` allowlist
@@ -73,9 +83,9 @@ Local-first, zero-trust MCP proxy + WebAssembly tool runtime (Rust). See [spec.t
 - [ ] `SecretString` wrapper: zeroize on drop, `Debug`/`Display` redaction, never serialized
 - [ ] Central redaction filter applied to logs, error messages, audit entries
 - [ ] Hot reload: watch config, atomic swap, `SIGHUP` (Unix) / equivalent; reload-safe pool draining
-- [ ] `mcpbox validate` command
+- [ ] `tpt-mcpbox validate` command
 
-## Phase 3 — Policy Engine (`mcpbox-policy`)
+## Phase 3 — Policy Engine (`tpt-mcpbox-policy`)
 
 - [ ] Policy input schema: caller identity/session, tool name, method, arguments, requested resource URIs, target host, fs path
 - [ ] Decision type: allow / deny / allow-with-constraints + reason + rule id (for audit)
@@ -87,7 +97,7 @@ Local-first, zero-trust MCP proxy + WebAssembly tool runtime (Rust). See [spec.t
 - [ ] Dry-run / audit-only mode (log what would be denied without blocking)
 - [ ] Tests: allow/deny matrices, glob edge cases, path traversal, Unicode/host-normalization, `regorus` policy fixtures; property tests
 
-## Phase 4 — Wasm Runtime (`mcpbox-runtime`)
+## Phase 4 — Wasm Runtime (`tpt-mcpbox-runtime`)
 
 - [ ] `wasmtime` engine config: component model on, epoch interruption, pooling allocator, fuel optional
 - [ ] Define WIT world for tools (exports: tool descriptors + `call`; imports: `wasi:http`, `wasi:filesystem`, `wasi:cli` subset, clocks, random)
@@ -103,7 +113,7 @@ Local-first, zero-trust MCP proxy + WebAssembly tool runtime (Rust). See [spec.t
 - [ ] Startup self-test: load a fixture component, assert sandbox denies fs/net not granted
 - [ ] Criterion benchmark: measure per-invocation overhead; assert < 5 ms p50 on reference hardware; track in CI
 
-## Phase 5 — Router & Rate Limiter (`mcpbox-router`)
+## Phase 5 — Router & Rate Limiter (`tpt-mcpbox-router`)
 
 - [ ] Dispatch `tools/call` to Wasm runtime or an upstream proxy target by tool origin
 - [ ] Namespaced aggregation: merge `tools`/`resources`/`prompts` from Wasm + all upstreams; prefix/rename on conflict; `list_changed` fan-in
@@ -112,7 +122,7 @@ Local-first, zero-trust MCP proxy + WebAssembly tool runtime (Rust). See [spec.t
 - [ ] Graceful shutdown: stop accepting, drain in-flight, checkpoint audit log
 - [ ] Cancellation + progress propagation across router boundary
 
-## Phase 6 — Passthrough Proxy (`mcpbox-proxy`)
+## Phase 6 — Passthrough Proxy (`tpt-mcpbox-proxy`)
 
 - [ ] MCP client for upstreams: stdio (spawn + supervise child process) and Streamable HTTP
 - [ ] Upstream lifecycle: launch, `initialize` handshake, health check, restart with backoff
@@ -123,41 +133,41 @@ Local-first, zero-trust MCP proxy + WebAssembly tool runtime (Rust). See [spec.t
 - [ ] Forward client features to upstream where needed (`roots`, `sampling`) with policy gate
 - [ ] Redact/scan upstream responses per policy (optional secret/PII pattern check)
 
-## Phase 7 — Guest Tool SDK (`mcpbox-sdk`)
+## Phase 7 — Guest Tool SDK (`tpt-mcpbox-sdk`)
 
 - [ ] Guest crate targeting the tool WIT world; re-export needed `wasi` bindings
 - [ ] `#[tool]` macro: register name, description, JSON-Schema params via `schemars`, typed handler
 - [ ] Ergonomic HTTP helper over `wasi:http` (JSON get/post, error mapping)
 - [ ] Structured tool errors + result content builders (text/JSON/resource)
 - [ ] Optional resource/prompt provider traits (full parity)
-- [ ] `cargo component`-based project template + `mcpbox init tool` generator
+- [ ] `cargo component`-based project template + `tpt-mcpbox init tool` generator
 - [ ] SDK doc page + a "hello world" tool walkthrough
 
 ## Phase 8 — Example Tools (`tools/`)
 
-- [ ] `tools/github`: search repos/code via `api.github.com`; relies on proxy-injected `GITHUB_TOKEN` header; no secret in guest
-- [ ] `tools/fs`: read within `./workspace/**`, write within `./workspace/output/**`, enforced by preopens
+- [ ] `tools/tpt-mcpbox-tool-github`: search repos/code via `api.github.com`; relies on proxy-injected `GITHUB_TOKEN` header; no secret in guest
+- [ ] `tools/tpt-mcpbox-tool-fs`: read within `./workspace/**`, write within `./workspace/output/**`, enforced by preopens
 - [ ] Build both to `.wasm` in CI; publish as release assets
 - [ ] Use both as end-to-end integration fixtures (policy allow + deny paths)
 - [ ] Sample `tpt-mcpbox.yaml` matching the spec's configuration example
 
-## Phase 9 — Observability (`mcpbox-audit` + runtime hooks)
+## Phase 9 — Observability (`tpt-mcpbox-audit` + runtime hooks)
 
 - [ ] `tracing` setup: JSON + pretty subscribers, `RUST_LOG`/config level, per-request span with tool, decision, duration
 - [ ] Tamper-evident audit log: append-only, per-entry hash chain (prev-hash), entries for every tool call, policy decision, secret injection (name only), upstream spawn, config reload
-- [ ] Optional signing of audit segments; log rotation; `mcpbox audit verify` to check chain integrity
+- [ ] Optional signing of audit segments; log rotation; `tpt-mcpbox audit verify` to check chain integrity
 - [ ] Prometheus `/metrics`: invocation counts, latency histograms, denial counts, pool utilization, upstream health, rate-limit rejections
 - [ ] Benchmark harness wired to CI with regression thresholds (overhead, cold vs warm)
 
-## Phase 10 — CLI & Developer Experience (`mcpbox-cli`)
+## Phase 10 — CLI & Developer Experience (`tpt-mcpbox-cli`)
 
-- [ ] `mcpbox run` (start proxy; `--config`, `--transport`, `--dry-run`)
-- [ ] `mcpbox validate`, `mcpbox schema` (emit config JSON Schema)
-- [ ] `mcpbox policy test <input.json>` (explain a decision)
-- [ ] `mcpbox tools ls` / `mcpbox tools call` (local invocation for debugging)
-- [ ] `mcpbox pull <oci-ref>` (fetch + verify a tool into cache)
-- [ ] `mcpbox audit verify`
-- [ ] `mcpbox init` (scaffold config) / `mcpbox init tool` (scaffold SDK project)
+- [ ] `tpt-mcpbox run` (start proxy; `--config`, `--transport`, `--dry-run`)
+- [ ] `tpt-mcpbox validate`, `tpt-mcpbox schema` (emit config JSON Schema)
+- [ ] `tpt-mcpbox policy test <input.json>` (explain a decision)
+- [ ] `tpt-mcpbox tools ls` / `tpt-mcpbox tools call` (local invocation for debugging)
+- [ ] `tpt-mcpbox pull <oci-ref>` (fetch + verify a tool into cache)
+- [ ] `tpt-mcpbox audit verify`
+- [ ] `tpt-mcpbox init` (scaffold config) / `tpt-mcpbox init tool` (scaffold SDK project)
 - [ ] Shell completions + generated man pages
 - [ ] Integration guide: wiring tpt-mcpbox into Claude Code / Claude Desktop `mcpServers`
 
@@ -189,10 +199,10 @@ Local-first, zero-trust MCP proxy + WebAssembly tool runtime (Rust). See [spec.t
 - [ ] `cargo test --workspace` green on all 4 platforms in CI
 - [ ] `cargo clippy --workspace --all-targets -D warnings`, `cargo fmt --check`, `cargo deny check`
 - [ ] MCP Inspector / Claude Code connects over stdio and Streamable HTTP; `tools/list`, `resources/list`, `prompts/list` populated from Wasm + an upstream server
-- [ ] `tools/call` on `tools/github` succeeds with proxy-injected token; the same call is **denied** when the policy host allowlist is emptied
-- [ ] `tools/call` on `tools/fs` can write only under `./workspace/output/**`; escape attempts denied
+- [ ] `tools/call` on `tools/tpt-mcpbox-tool-github` succeeds with proxy-injected token; the same call is **denied** when the policy host allowlist is emptied
+- [ ] `tools/call` on `tools/tpt-mcpbox-tool-fs` can write only under `./workspace/output/**`; escape attempts denied
 - [ ] Criterion benchmark shows < 5 ms warm-pool invocation overhead on the reference machine
-- [ ] `mcpbox audit verify` passes; tampering with one entry makes it fail
+- [ ] `tpt-mcpbox audit verify` passes; tampering with one entry makes it fail
 - [ ] `/metrics` exposes invocation, denial, latency, and pool series
 - [ ] Secret-scan test suite finds no credential material in logs/audit/metrics/errors
 - [ ] `cargo-fuzz` targets run clean for a set duration in CI

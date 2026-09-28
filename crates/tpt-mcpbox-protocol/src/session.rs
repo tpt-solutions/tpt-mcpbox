@@ -19,9 +19,9 @@ use uuid::Uuid;
 
 use crate::error::{ProtocolError, Result};
 use crate::model::{
-    ClientCapabilities, Implementation, InitializeParams, InitializeResult, LoggingLevel, ServerCapabilities,
+    ClientCapabilities, InitializeParams, InitializeResult, LoggingLevel, ServerCapabilities,
 };
-use crate::shared::{LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS};
+use crate::shared::{Implementation, LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS};
 
 /// Opaque session identifier, used as the `Mcp-Session-Id` HTTP header.
 ///
@@ -197,7 +197,11 @@ impl Session {
             ));
         }
 
-        let protocol_version = if self.config.supported_versions.contains(&params.protocol_version) {
+        let protocol_version = if self
+            .config
+            .supported_versions
+            .contains(&params.protocol_version)
+        {
             params.protocol_version.clone()
         } else {
             self.config
@@ -343,14 +347,20 @@ mod tests {
     async fn requests_are_refused_before_initialization() {
         let session = session();
         assert_eq!(session.state().await, SessionState::Initializing);
-        let error = session.ensure_servable("tools/call").await.expect_err("must refuse");
+        let error = session
+            .ensure_servable("tools/call")
+            .await
+            .expect_err("must refuse");
         assert!(error.to_string().contains("tools/call"));
     }
 
     #[tokio::test]
     async fn handshake_opens_the_session() {
         let session = session();
-        let result = session.negotiate(params(LATEST_PROTOCOL_VERSION)).await.expect("negotiates");
+        let result = session
+            .negotiate(params(LATEST_PROTOCOL_VERSION))
+            .await
+            .expect("negotiates");
         assert_eq!(result.protocol_version, LATEST_PROTOCOL_VERSION);
         assert_eq!(result.server_info.name, "tpt-mcpbox");
 
@@ -364,7 +374,10 @@ mod tests {
     #[tokio::test]
     async fn initialize_is_single_use() {
         let session = session();
-        session.negotiate(params(LATEST_PROTOCOL_VERSION)).await.expect("first");
+        session
+            .negotiate(params(LATEST_PROTOCOL_VERSION))
+            .await
+            .expect("first");
         let error = session
             .negotiate(params(LATEST_PROTOCOL_VERSION))
             .await
@@ -375,14 +388,20 @@ mod tests {
     #[tokio::test]
     async fn unknown_versions_fall_back_to_the_preferred_one() {
         let session = session();
-        let result = session.negotiate(params("1999-01-01")).await.expect("negotiates");
+        let result = session
+            .negotiate(params("1999-01-01"))
+            .await
+            .expect("negotiates");
         assert_eq!(result.protocol_version, LATEST_PROTOCOL_VERSION);
     }
 
     #[tokio::test]
     async fn older_supported_versions_are_echoed() {
         let session = session();
-        let result = session.negotiate(params("2024-11-05")).await.expect("negotiates");
+        let result = session
+            .negotiate(params("2024-11-05"))
+            .await
+            .expect("negotiates");
         assert_eq!(result.protocol_version, "2024-11-05");
     }
 
@@ -402,7 +421,10 @@ mod tests {
     #[tokio::test]
     async fn closing_blocks_further_requests() {
         let session = session();
-        session.negotiate(params(LATEST_PROTOCOL_VERSION)).await.expect("negotiates");
+        session
+            .negotiate(params(LATEST_PROTOCOL_VERSION))
+            .await
+            .expect("negotiates");
         session.mark_ready().await;
         session.begin_closing().await;
         assert_eq!(session.state().await, SessionState::Closing);

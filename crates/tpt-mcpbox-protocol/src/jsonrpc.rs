@@ -97,9 +97,22 @@ impl fmt::Display for Id {
     }
 }
 
+impl Default for Id {
+    /// `null`, the id used when a failure cannot be correlated to a request.
+    fn default() -> Self {
+        Self::Null
+    }
+}
+
 impl From<i64> for Id {
     fn from(value: i64) -> Self {
         Self::Number(value)
+    }
+}
+
+impl From<i32> for Id {
+    fn from(value: i32) -> Self {
+        Self::Number(i64::from(value))
     }
 }
 
@@ -175,13 +188,14 @@ impl From<i32> for ErrorCode {
 
 /// The `error` member of a JSON-RPC response.
 ///
-/// `id` is always serialized (as `null` when the request id could not be
-/// recovered), because JSON-RPC requires the member to be present.
+/// Only `code`, `message` and `data` are serialized: `id` and `jsonrpc` belong
+/// to the enclosing [`Response`]. The `id` field is kept in memory so a failure
+/// can be turned into a correctly correlated response.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Error {
-    /// Always `"2.0"`.
-    pub jsonrpc: String,
-    /// Identifier of the request that failed; `null` if unknown.
+    /// Identifier of the request that failed, when known. Never serialized
+    /// inside the `error` member.
+    #[serde(skip)]
     pub id: Option<Id>,
     /// Machine-readable failure code.
     pub code: ErrorCode,
@@ -197,7 +211,6 @@ impl Error {
     #[must_use]
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
-            jsonrpc: default_version(),
             id: None,
             code,
             message: message.into(),
@@ -242,8 +255,6 @@ impl<'de> Deserialize<'de> for Error {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         #[derive(Deserialize)]
         struct Raw {
-            #[serde(default = "default_version")]
-            jsonrpc: String,
             #[serde(default)]
             id: Option<Id>,
             code: ErrorCode,
@@ -253,9 +264,7 @@ impl<'de> Deserialize<'de> for Error {
         }
 
         let raw = Raw::deserialize(deserializer)?;
-        check_version(&raw.jsonrpc).map_err(D::Error::custom)?;
         Ok(Self {
-            jsonrpc: raw.jsonrpc,
             id: raw.id,
             code: raw.code,
             message: raw.message,
@@ -290,9 +299,14 @@ impl Request {
     }
 
     /// Attach params, replacing any previous value.
+    ///
+    /// Params are serialized with `serde`. A serialization failure (only
+    /// possible for values that are not JSON-representable, which MCP forbids)
+    /// degrades to `null` rather than failing, so building an envelope never
+    /// panics on a hostile payload.
     #[must_use]
-    pub fn with_params(mut self, params: impl Into<Value>) -> Self {
-        self.params = Some(params.into());
+    pub fn with_params<T: serde::Serialize>(mut self, params: T) -> Self {
+        self.params = Some(serde_json::to_value(params).unwrap_or(Value::Null));
         self
     }
 
@@ -305,7 +319,8 @@ impl Request {
     /// Returns [`ProtocolError::InvalidParams`] when the shape does not match.
     pub fn parse_params<T: serde::de::DeserializeOwned>(&self) -> Result<T> {
         let value = self.params.clone().unwrap_or(Value::Null);
-        serde_json::from_value(value).map_err(|source| ProtocolError::invalid_params(&self.method, source))
+        serde_json::from_value(value)
+            .map_err(|source| ProtocolError::invalid_params(&self.method, source))
     }
 }
 
@@ -355,9 +370,11 @@ impl Notification {
     }
 
     /// Attach params, replacing any previous value.
+    ///
+    /// See [`Request::with_params`] for the serialization fallback behaviour.
     #[must_use]
-    pub fn with_params(mut self, params: impl Into<Value>) -> Self {
-        self.params = Some(params.into());
+    pub fn with_params<T: serde::Serialize>(mut self, params: T) -> Self {
+        self.params = Some(serde_json::to_value(params).unwrap_or(Value::Null));
         self
     }
 
@@ -367,7 +384,8 @@ impl Notification {
     /// Returns [`ProtocolError::InvalidParams`] when the shape does not match.
     pub fn parse_params<T: serde::de::DeserializeOwned>(&self) -> Result<T> {
         let value = self.params.clone().unwrap_or(Value::Null);
-        serde_json::from_value(value).map_err(|source| ProtocolError::invalid_params(&self.method, source))
+        serde_json::from_value(value)
+            .map_err(|source| ProtocolError::invalid_params(&self.method, source))
     }
 }
 
@@ -421,11 +439,23 @@ impl Response {
         }
     }
 
+    /// Build a success response from any serializable result.
+    ///
+    /// # Errors
+    /// Returns [`serde_json::Error`] if `result` cannot be represented as
+    /// JSON (which for MCP payloads means non-string map keys).
+    pub fn success_serde<T: serde::Serialize>(
+        id: impl Into<Id>,
+        result: T,
+    ) -> serde_json::Result<Self> {
+        Ok(Self::success(id, serde_json::to_value(result)?))
+    }
+
     /// Build an error response from a wire error.
     pub fn failure(error: Error) -> Self {
         Self {
             jsonrpc: default_version(),
-            id: error.id.clone().unwrap_or_else(|| Id::Number(0)),
+            id: error.id.clone().unwrap_or_default(),
             result: None,
             error: Some(error),
         }
@@ -490,7 +520,9 @@ impl<'de> Deserialize<'de> for Response {
         }
         Ok(Self {
             jsonrpc: raw.jsonrpc,
-            id: raw.id.ok_or_else(|| D::Error::custom("response is missing `id`"))?,
+            id: raw
+                .id
+                .ok_or_else(|| D::Error::custom("response is missing `id`"))?,
             result: raw.result,
             error: raw.error,
         })
@@ -561,9 +593,12 @@ impl ClientMessage {
 
     /// Parse a single (non-batch) message from a JSON string.
     ///
+    /// Named `parse` rather than `from_str` so it is not confused with
+    /// [`std::str::FromStr::from_str`], which this type does not implement.
+    ///
     /// # Errors
     /// Propagates JSON and classification failures.
-    pub fn from_str(json: &str) -> Result<Self> {
+    pub fn parse(json: &str) -> Result<Self> {
         Self::from_value(serde_json::from_str(json)?)
     }
 
@@ -589,7 +624,10 @@ impl ClientMessage {
 }
 
 impl Serialize for ClientMessage {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         match self {
             Self::Request(value) => value.serialize(serializer),
             Self::Notification(value) => value.serialize(serializer),
@@ -676,6 +714,15 @@ impl ServerMessage {
             other => vec![other],
         }
     }
+
+    /// Convert into the JSON representation written on the wire.
+    ///
+    /// Returns `None` only if serialization fails, which for these types can
+    /// only happen with non-string map keys in `params`.
+    #[must_use]
+    pub fn into_value(self) -> Option<Value> {
+        serde_json::to_value(self).ok()
+    }
 }
 
 #[cfg(test)]
@@ -686,7 +733,7 @@ mod tests {
     #[test]
     fn request_round_trips_with_params() {
         let json = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fs_read"}}"#;
-        let message = ClientMessage::from_str(json).expect("parses");
+        let message = ClientMessage::parse(json).expect("parses");
         let ClientMessage::Request(request) = &message else {
             panic!("expected a request");
         };
@@ -698,7 +745,7 @@ mod tests {
 
     #[test]
     fn string_ids_are_preserved() {
-        let message = ClientMessage::from_str(r#"{"jsonrpc":"2.0","id":"abc","method":"ping"}"#)
+        let message = ClientMessage::parse(r#"{"jsonrpc":"2.0","id":"abc","method":"ping"}"#)
             .expect("parses");
         assert_eq!(message.id(), Some(&Id::String("abc".to_owned())));
     }
@@ -706,7 +753,7 @@ mod tests {
     #[test]
     fn notifications_have_no_id() {
         let message =
-            ClientMessage::from_str(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+            ClientMessage::parse(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
                 .expect("parses");
         assert!(matches!(message, ClientMessage::Notification(_)));
         assert_eq!(message.id(), None);
@@ -715,24 +762,24 @@ mod tests {
 
     #[test]
     fn wrong_jsonrpc_version_is_rejected() {
-        let error =
-            ClientMessage::from_str(r#"{"jsonrpc":"1.0","id":1,"method":"ping"}"#).expect_err("must reject");
+        let error = ClientMessage::parse(r#"{"jsonrpc":"1.0","id":1,"method":"ping"}"#)
+            .expect_err("must reject");
         assert!(error.to_string().contains("2.0"), "unexpected: {error}");
     }
 
     #[test]
     fn response_requires_exactly_one_outcome() {
         let both = r#"{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":-1,"message":"x"}}"#;
-        assert!(ClientMessage::from_str(both).is_err());
+        assert!(ClientMessage::parse(both).is_err());
 
         let neither = r#"{"jsonrpc":"2.0","id":1}"#;
-        assert!(ClientMessage::from_str(neither).is_err());
+        assert!(ClientMessage::parse(neither).is_err());
     }
 
     #[test]
     fn error_responses_keep_code_and_data() {
         let json = r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32601,"message":"tools/call","data":{"hint":"x"}}}"#;
-        let ClientMessage::Response(response) = ClientMessage::from_str(json).expect("parses") else {
+        let ClientMessage::Response(response) = ClientMessage::parse(json).expect("parses") else {
             panic!("expected a response");
         };
         assert!(response.is_error());
@@ -745,7 +792,7 @@ mod tests {
     #[test]
     fn unknown_error_codes_round_trip() {
         let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"custom"}}"#;
-        let ClientMessage::Response(response) = ClientMessage::from_str(json).expect("parses") else {
+        let ClientMessage::Response(response) = ClientMessage::parse(json).expect("parses") else {
             panic!("expected a response");
         };
         let error = response.error.as_ref().expect("error");
@@ -755,7 +802,7 @@ mod tests {
 
     #[test]
     fn missing_id_on_a_response_is_rejected() {
-        assert!(ClientMessage::from_str(r#"{"jsonrpc":"2.0","result":{}}"#).is_err());
+        assert!(ClientMessage::parse(r#"{"jsonrpc":"2.0","result":{}}"#).is_err());
     }
 
     #[test]
@@ -766,7 +813,13 @@ mod tests {
         ]))
         .expect("batch parses");
         assert_eq!(incoming.len(), 2);
-        assert_eq!(incoming.into_client_messages().expect("messages parse").len(), 2);
+        assert_eq!(
+            incoming
+                .into_client_messages()
+                .expect("messages parse")
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -788,14 +841,23 @@ mod tests {
     fn id_sequences_advance_per_kind() {
         assert_eq!(Id::Number(1).next(), Id::Number(2));
         assert_eq!(Id::String("7".to_owned()).next(), Id::Number(8));
-        assert_eq!(Id::String("abc".to_owned()).next(), Id::String("abc-1".to_owned()));
+        assert_eq!(
+            Id::String("abc".to_owned()).next(),
+            Id::String("abc-1".to_owned())
+        );
     }
 
     #[test]
     fn parse_params_reports_the_method_name() {
-        let request = Request::new(1, "tools/call").with_params(serde_json::json!({"arguments": 5}));
-        let error = request.parse_params::<CallToolRequest>().expect_err("invalid");
-        assert!(error.to_string().contains("tools/call"), "unexpected: {error}");
+        let request =
+            Request::new(1, "tools/call").with_params(serde_json::json!({"arguments": 5}));
+        let error = request
+            .parse_params::<CallToolRequest>()
+            .expect_err("invalid");
+        assert!(
+            error.to_string().contains("tools/call"),
+            "unexpected: {error}"
+        );
     }
 
     #[test]
@@ -809,5 +871,3 @@ mod tests {
         assert_eq!(batch.flatten().len(), 2);
     }
 }
-
-

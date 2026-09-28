@@ -11,6 +11,9 @@ homepage.workspace = true
 categories.workspace = true
 keywords.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 tpt-mcpbox-config = { workspace = true }
 tpt-mcpbox-policy = { workspace = true }

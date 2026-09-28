@@ -25,3 +25,12 @@ Thumbs.db
 
 # Docs build
 /book/
+
+# Local build/verification logs produced by ad-hoc cargo runs
+*.log
+build.out
+build.err
+test.out
+test.err
+clippy.out
+clippy.err

@@ -1,0 +1,148 @@
+error[rejected]: failed to satisfy license requirements
+   ┌─ C:\Users\Phillip\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\matchit-0.8.4\Cargo.toml:30:20
+   │
+30 │ license = "MIT AND BSD-3-Clause"
+   │            ────────━━━━━━━━━━━━
+   │                    │
+   │                    rejected: license is not explicitly allowed
+   │
+   ├ BSD-3-Clause - BSD 3-Clause "New" or "Revised" License:
+   ├   - OSI approved
+   ├   - FSF Free/Libre
+   ├ matchit v0.8.4
+     └── axum v0.8.9
+         └── tpt-mcpbox-protocol v0.1.0
+             ├── tpt-mcpbox-cli v0.1.0
+             ├── tpt-mcpbox-proxy v0.1.0
+             │   ├── tpt-mcpbox-cli v0.1.0 (*)
+             │   └── tpt-mcpbox-router v0.1.0
+             │       └── tpt-mcpbox-cli v0.1.0 (*)
+             ├── tpt-mcpbox-router v0.1.0 (*)
+             └── tpt-mcpbox-runtime v0.1.0
+                 ├── tpt-mcpbox-cli v0.1.0 (*)
+                 └── tpt-mcpbox-router v0.1.0 (*)
+
+warning[license-not-encountered]: license was not encountered
+   ┌─ C:\Programming\2 WIP\tpt-mcpbox\deny.toml:25:6
+   │
+25 │     "Apache-2.0 WITH LLVM-exception",
+   │      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ unmatched license allowance
+
+warning[duplicate]: found 2 duplicate entries for crate 'syn'
+   ┌─ C:\Programming\2 WIP\tpt-mcpbox/Cargo.lock:62:1
+   │  
+62 │ ╭ syn 2.0.119 registry+https://github.com/rust-lang/crates.io-index
+63 │ │ syn 3.0.6 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰───────────────────────────────────────────────────────────────┘ lock entries
+   │  
+   ├ syn v2.0.119
+     ├── axum-macros v0.5.1
+     │   └── axum v0.8.9
+     │       └── tpt-mcpbox-protocol v0.1.0
+     │           ├── tpt-mcpbox-cli v0.1.0
+     │           ├── tpt-mcpbox-proxy v0.1.0
+     │           │   ├── tpt-mcpbox-cli v0.1.0 (*)
+     │           │   └── tpt-mcpbox-router v0.1.0
+     │           │       └── tpt-mcpbox-cli v0.1.0 (*)
+     │           ├── tpt-mcpbox-router v0.1.0 (*)
+     │           └── tpt-mcpbox-runtime v0.1.0
+     │               ├── tpt-mcpbox-cli v0.1.0 (*)
+     │               └── tpt-mcpbox-router v0.1.0 (*)
+     └── tracing-attributes v0.1.31
+         └── tracing v0.1.44
+             ├── tpt-mcpbox-audit v0.1.0
+             │   ├── tpt-mcpbox-cli v0.1.0 (*)
+             │   └── tpt-mcpbox-router v0.1.0 (*)
+             ├── tpt-mcpbox-cli v0.1.0 (*)
+             ├── tpt-mcpbox-config v0.1.0
+             │   ├── tpt-mcpbox-cli v0.1.0 (*)
+             │   ├── tpt-mcpbox-policy v0.1.0
+             │   │   ├── tpt-mcpbox-cli v0.1.0 (*)
+             │   │   ├── tpt-mcpbox-proxy v0.1.0 (*)
+             │   │   ├── tpt-mcpbox-router v0.1.0 (*)
+             │   │   └── tpt-mcpbox-runtime v0.1.0 (*)
+             │   ├── tpt-mcpbox-proxy v0.1.0 (*)
+             │   ├── tpt-mcpbox-router v0.1.0 (*)
+             │   └── tpt-mcpbox-runtime v0.1.0 (*)
+             ├── tpt-mcpbox-policy v0.1.0 (*)
+             ├── tpt-mcpbox-protocol v0.1.0 (*)
+             ├── tpt-mcpbox-proxy v0.1.0 (*)
+             ├── tpt-mcpbox-router v0.1.0 (*)
+             ├── tpt-mcpbox-runtime v0.1.0 (*)
+             └── tracing-subscriber v0.3.23
+                 ├── tpt-mcpbox-audit v0.1.0 (*)
+                 └── tpt-mcpbox-cli v0.1.0 (*)
+   ├ syn v3.0.6
+     ├── futures-macro v0.3.34
+     │   └── futures-util v0.3.34
+     │       ├── axum v0.8.9
+     │       │   └── tpt-mcpbox-protocol v0.1.0
+     │       │       ├── tpt-mcpbox-cli v0.1.0
+     │       │       ├── tpt-mcpbox-proxy v0.1.0
+     │       │       │   ├── tpt-mcpbox-cli v0.1.0 (*)
+     │       │       │   └── tpt-mcpbox-router v0.1.0
+     │       │       │       └── tpt-mcpbox-cli v0.1.0 (*)
+     │       │       ├── tpt-mcpbox-router v0.1.0 (*)
+     │       │       └── tpt-mcpbox-runtime v0.1.0
+     │       │           ├── tpt-mcpbox-cli v0.1.0 (*)
+     │       │           └── tpt-mcpbox-router v0.1.0 (*)
+     │       ├── futures v0.3.34
+     │       │   └── tpt-mcpbox-protocol v0.1.0 (*)
+     │       ├── futures-executor v0.3.34
+     │       │   └── futures v0.3.34 (*)
+     │       └── tower v0.5.3
+     │           ├── axum v0.8.9 (*)
+     │           └── tpt-mcpbox-protocol v0.1.0 (*)
+     ├── serde_derive v1.0.229
+     │   └── serde v1.0.229
+     │       ├── tpt-mcpbox-audit v0.1.0
+     │       │   ├── tpt-mcpbox-cli v0.1.0 (*)
+     │       │   └── tpt-mcpbox-router v0.1.0 (*)
+     │       ├── tpt-mcpbox-cli v0.1.0 (*)
+     │       ├── tpt-mcpbox-config v0.1.0
+     │       │   ├── tpt-mcpbox-cli v0.1.0 (*)
+     │       │   ├── tpt-mcpbox-policy v0.1.0
+     │       │   │   ├── tpt-mcpbox-cli v0.1.0 (*)
+     │       │   │   ├── tpt-mcpbox-proxy v0.1.0 (*)
+     │       │   │   ├── tpt-mcpbox-router v0.1.0 (*)
+     │       │   │   └── tpt-mcpbox-runtime v0.1.0 (*)
+     │       │   ├── tpt-mcpbox-proxy v0.1.0 (*)
+     │       │   ├── tpt-mcpbox-router v0.1.0 (*)
+     │       │   └── tpt-mcpbox-runtime v0.1.0 (*)
+     │       ├── tpt-mcpbox-policy v0.1.0 (*)
+     │       ├── tpt-mcpbox-protocol v0.1.0 (*)
+     │       ├── tpt-mcpbox-proxy v0.1.0 (*)
+     │       ├── tpt-mcpbox-router v0.1.0 (*)
+     │       ├── tpt-mcpbox-runtime v0.1.0 (*)
+     │       ├── tracing-serde v0.2.0
+     │       │   └── tracing-subscriber v0.3.23
+     │       │       ├── tpt-mcpbox-audit v0.1.0 (*)
+     │       │       └── tpt-mcpbox-cli v0.1.0 (*)
+     │       └── tracing-subscriber v0.3.23 (*)
+     ├── thiserror-impl v2.0.21
+     │   └── thiserror v2.0.21
+     │       ├── tpt-mcpbox-audit v0.1.0 (*)
+     │       ├── tpt-mcpbox-cli v0.1.0 (*)
+     │       ├── tpt-mcpbox-config v0.1.0 (*)
+     │       ├── tpt-mcpbox-policy v0.1.0 (*)
+     │       ├── tpt-mcpbox-protocol v0.1.0 (*)
+     │       ├── tpt-mcpbox-proxy v0.1.0 (*)
+     │       ├── tpt-mcpbox-router v0.1.0 (*)
+     │       └── tpt-mcpbox-runtime v0.1.0 (*)
+     └── tokio-macros v2.7.2
+         └── tokio v1.53.1
+             ├── axum v0.8.9 (*)
+             ├── hyper v1.11.1
+             │   ├── axum v0.8.9 (*)
+             │   └── hyper-util v0.1.21
+             │       └── axum v0.8.9 (*)
+             ├── hyper-util v0.1.21 (*)
+             ├── tokio-util v0.7.19
+             │   └── tpt-mcpbox-protocol v0.1.0 (*)
+             ├── tower v0.5.3 (*)
+             ├── tpt-mcpbox-cli v0.1.0 (*)
+             ├── (dev) tpt-mcpbox-protocol v0.1.0 (*)
+             ├── tpt-mcpbox-proxy v0.1.0 (*)
+             ├── tpt-mcpbox-router v0.1.0 (*)
+             └── tpt-mcpbox-runtime v0.1.0 (*)
+

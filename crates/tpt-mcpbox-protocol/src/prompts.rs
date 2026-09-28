@@ -69,7 +69,11 @@ pub struct ListPromptsResult {
     /// Prompts in this page.
     pub prompts: Vec<Prompt>,
     /// Cursor for the next page.
-    #[serde(default, rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "nextCursor",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub next_cursor: Option<String>,
 }
 
