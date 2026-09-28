@@ -1,0 +1,63 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/tpt-mcpbox-audit",
+    "crates/tpt-mcpbox-cli",
+    "crates/tpt-mcpbox-config",
+    "crates/tpt-mcpbox-policy",
+    "crates/tpt-mcpbox-protocol",
+    "crates/tpt-mcpbox-proxy",
+    "crates/tpt-mcpbox-router",
+    "crates/tpt-mcpbox-runtime",
+]
+# Guest/Wasm crates do not build for the host target and are therefore built by
+# `cargo component` in their own workspace (see docs/architecture.md).
+exclude = ["crates/tpt-mcpbox-sdk", "tools"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["TPT Solutions"]
+repository = "https://github.com/tpt-solutions/tpt-mcpbox"
+homepage = "https://github.com/tpt-solutions/tpt-mcpbox"
+readme = "README.md"
+keywords = ["mcp", "wasm", "security", "proxy", "sandbox"]
+categories = ["command-line-utilities", "development-tools"]
+
+[workspace.dependencies]
+# internal crates
+tpt-mcpbox-protocol = { path = "crates/tpt-mcpbox-protocol", version = "0.1.0" }
+tpt-mcpbox-config = { path = "crates/tpt-mcpbox-config", version = "0.1.0" }
+tpt-mcpbox-policy = { path = "crates/tpt-mcpbox-policy", version = "0.1.0" }
+tpt-mcpbox-runtime = { path = "crates/tpt-mcpbox-runtime", version = "0.1.0" }
+tpt-mcpbox-proxy = { path = "crates/tpt-mcpbox-proxy", version = "0.1.0" }
+tpt-mcpbox-router = { path = "crates/tpt-mcpbox-router", version = "0.1.0" }
+tpt-mcpbox-audit = { path = "crates/tpt-mcpbox-audit", version = "0.1.0" }
+
+# third-party
+async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "macros", "tokio"] }
+clap = { version = "4", features = ["derive", "env"] }
+futures = "0.3"
+http = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "sync", "time", "net", "signal", "fs"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# dev
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

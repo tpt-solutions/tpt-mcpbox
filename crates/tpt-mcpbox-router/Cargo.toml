@@ -1,0 +1,28 @@
+[package]
+name = "tpt-mcpbox-router"
+description = "Request routing, namespaced aggregation, rate limiting and graceful shutdown for tpt-mcpbox."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+tpt-mcpbox-audit = { workspace = true }
+tpt-mcpbox-config = { workspace = true }
+tpt-mcpbox-policy = { workspace = true }
+tpt-mcpbox-protocol = { workspace = true }
+tpt-mcpbox-proxy = { workspace = true }
+tpt-mcpbox-runtime = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

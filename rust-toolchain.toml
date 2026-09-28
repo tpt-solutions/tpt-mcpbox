@@ -1,0 +1,8 @@
+# Development toolchain for tpt-mcpbox.
+#
+# The MSRV is pinned in `Cargo.toml` (`rust-version = "1.85"`) and enforced by the
+# `msrv` job in .github/workflows/ci.yml. Contributors are expected to develop on a
+# current stable release; CI additionally builds with the MSRV toolchain.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

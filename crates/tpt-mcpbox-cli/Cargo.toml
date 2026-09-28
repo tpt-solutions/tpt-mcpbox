@@ -1,0 +1,34 @@
+[package]
+name = "tpt-mcpbox-cli"
+description = "Command-line interface for tpt-mcpbox: run, validate, policy, tools, pull, audit, init."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[[bin]]
+name = "tpt-mcpbox"
+path = "src/main.rs"
+
+[dependencies]
+tpt-mcpbox-audit = { workspace = true }
+tpt-mcpbox-config = { workspace = true }
+tpt-mcpbox-policy = { workspace = true }
+tpt-mcpbox-protocol = { workspace = true }
+tpt-mcpbox-proxy = { workspace = true }
+tpt-mcpbox-router = { workspace = true }
+tpt-mcpbox-runtime = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

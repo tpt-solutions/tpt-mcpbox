@@ -1,0 +1,22 @@
+[package]
+name = "tpt-mcpbox-policy"
+description = "Capability-based policy engine (YAML DSL and embedded Rego) for tpt-mcpbox."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+tpt-mcpbox-config = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
