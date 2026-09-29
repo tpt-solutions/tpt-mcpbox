@@ -1,0 +1,14 @@
+    Checking hyper v1.11.1
+    Checking tower v0.5.3
+    Checking tokio-util v0.7.19
+    Checking tpt-mcpbox-config v0.1.0 (C:\Programming\2 WIP\tpt-mcpbox\crates\tpt-mcpbox-config)
+    Checking tpt-mcpbox-audit v0.1.0 (C:\Programming\2 WIP\tpt-mcpbox\crates\tpt-mcpbox-audit)
+    Checking hyper-util v0.1.21
+    Checking axum v0.8.9
+    Checking tpt-mcpbox-policy v0.1.0 (C:\Programming\2 WIP\tpt-mcpbox\crates\tpt-mcpbox-policy)
+    Checking tpt-mcpbox-protocol v0.1.0 (C:\Programming\2 WIP\tpt-mcpbox\crates\tpt-mcpbox-protocol)
+    Checking tpt-mcpbox-runtime v0.1.0 (C:\Programming\2 WIP\tpt-mcpbox\crates\tpt-mcpbox-runtime)
+    Checking tpt-mcpbox-proxy v0.1.0 (C:\Programming\2 WIP\tpt-mcpbox\crates\tpt-mcpbox-proxy)
+    Checking tpt-mcpbox-router v0.1.0 (C:\Programming\2 WIP\tpt-mcpbox\crates\tpt-mcpbox-router)
+    Checking tpt-mcpbox-cli v0.1.0 (C:\Programming\2 WIP\tpt-mcpbox\crates\tpt-mcpbox-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 31.75s

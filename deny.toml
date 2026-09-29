@@ -16,13 +16,14 @@ exclude-dev = false
 ignore = []
 
 [licenses]
-# Kept minimal on purpose: every allowance here is a licence decision, and
-# unused entries are reported as warnings by cargo-deny.
-# Re-add (with a comment explaining why) when a new dependency needs one.
+# Every entry is a licence decision, and cargo-deny warns about unused ones.
+# Note that a compound expression such as "MIT AND BSD-3-Clause" requires *each*
+# part to be allowed here (e.g. `matchit`, a dependency of axum).
 allow = [
     "MIT",
     "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    # Required by `unicode-ident` ("(MIT OR Apache-2.0) AND Unicode-3.0").
     "Unicode-3.0",
 ]
 confidence-threshold = 0.93

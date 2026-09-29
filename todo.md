@@ -10,7 +10,9 @@ Local-first, zero-trust MCP proxy + WebAssembly tool runtime (Rust). See [spec.t
 the host workspace and build for `wasm32-wasip2` with `cargo-component`.
 
 **Last updated:** 2026-09-29 — Phase 0 complete, Phase 1 (protocol core)
-implemented with 110 passing tests; Phases 2–12 outstanding.
+implemented with 110 passing tests; Phase 2 (config & secrets) largely
+implemented with 73 passing config tests (open: SIGHUP, central redaction
+wiring); Phases 3–12 outstanding.
 
 ---
 
@@ -75,15 +77,15 @@ implemented with 110 passing tests; Phases 2–12 outstanding.
 
 ## Phase 2 — Configuration & Secrets (`tpt-mcpbox-config`)
 
-- [ ] `tpt-mcpbox.yaml` model: `tools[]` (name, source, capabilities, secrets, limits, rate limits), `upstreams[]`, `server` (transports, bind), `policy`, `audit`, `metrics`, `logging`
-- [ ] Capability schema: `network` (domain allowlist), `filesystem.read/write` (glob lists), `memory_limit`, `time_limit`, `env` allowlist
-- [ ] Loader + strict validation + helpful diagnostics; emit JSON Schema for editor support
-- [ ] Config discovery (CWD, `--config`, XDG/`%APPDATA%`), layering, defaults
-- [ ] Secrets: load from process env + gitignored `.env`; `secret → header` mapping (e.g. `GITHUB_TOKEN` → `Authorization: Bearer …`)
-- [ ] `SecretString` wrapper: zeroize on drop, `Debug`/`Display` redaction, never serialized
-- [ ] Central redaction filter applied to logs, error messages, audit entries
-- [ ] Hot reload: watch config, atomic swap, `SIGHUP` (Unix) / equivalent; reload-safe pool draining
-- [ ] `tpt-mcpbox validate` command
+- [x] `tpt-mcpbox.yaml` model (`model`, `units`): `tools[]` (name, source, capabilities, secrets, limits, rate limits), `upstreams[]`, `server` (transports, bind), `policy`, `audit`, `metrics`, `logging`
+- [x] Capability schema (`model::Capabilities`): `network` (domain allowlist), `filesystem.read/write` (glob lists), `memory_limit`, `time_limit`, `env` allowlist
+- [x] Loader + strict validation + helpful diagnostics; emit JSON Schema for editor support (`load`, `validate`, `schema`)
+- [x] Config discovery (`--config`, `$MCPBOX_CONFIG`, CWD, XDG/`%APPDATA%`), layering (`tpt-mcpbox.local.yaml` overlay adds tools/upstreams only), defaults
+- [x] Secrets (`secrets::SecretStore`): load from process env + gitignored `.env`; `secret → header` mapping (e.g. `GITHUB_TOKEN` → `Authorization: Bearer …`)
+- [x] `SecretString` wrapper: zeroize on drop, `Debug`/`Display` redaction, never serialized
+- [ ] Central redaction filter applied to logs, error messages, audit entries (`secrets::Redactor` implemented; wire into `tracing` and audit in Phase 9)
+- [ ] Hot reload: watch config, atomic swap, `SIGHUP` (Unix) / equivalent; reload-safe pool draining (`reload::watch_config` polling watcher + validate-before-swap `ReloadHandle` done; `SIGHUP` and pool draining outstanding, latter needs Phase 4)
+- [x] `tpt-mcpbox validate` command (plus `tpt-mcpbox schema`)
 
 ## Phase 3 — Policy Engine (`tpt-mcpbox-policy`)
 

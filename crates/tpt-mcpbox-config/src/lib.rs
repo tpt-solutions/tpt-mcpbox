@@ -1,19 +1,70 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) TPT Solutions
 
-//! Configuration model, loading, validation and secret handling for tpt-mcpbox.
+//! Configuration, validation and secret handling for tpt-mcpbox (Phase 2).
 //!
-//! Scope (Phase 2): the `tpt-mcpbox.yaml` schema (tools, upstreams, server,
-//! policy, audit, metrics, logging), strict validation with actionable
-//! diagnostics, config discovery/layering, `.env` + environment secret sources,
-//! [`config::SecretString`] zeroizing redaction, and the hot-reload
-//! configuration store.
+//! The crate is deliberately split so that *parsing* never implies *trust*:
 //!
-//! Until Phase 2 lands this crate intentionally exposes only the crate root so
-//! the workspace keeps building and linting.
+//! * [`model`] - the `tpt-mcpbox.yaml` data model. Unknown fields are rejected,
+//!   so a typo in a capability grant fails instead of silently widening it.
+//! * [`units`] - human-friendly byte sizes (`"64MB"`) and durations (`"500ms"`).
+//! * [`load`] - discovery, layering and parsing into [`model::Config`].
+//! * [`validate`] - semantic checks with actionable diagnostics, plus the
+//!   [`validate::ValidationMode`] switch that forbids `policy.default: allow`
+//!   outside dry-run runs.
+//! * [`secrets`] - [`secrets::SecretString`] (zeroizing, redacted), the
+//!   environment/`.env` sources, header injection and the central
+//!   [`secrets::Redactor`].
+//! * [`schema`] - JSON Schema emission for editor completion and CI checks.
+//! * [`reload`] - a polling watcher plus an atomic swap handle.
+//!
+//! # Example
+//!
+//! ```
+//! use tpt_mcpbox_config::{load_str, validate, ValidationMode};
+//!
+//! let yaml = r#"
+//! tools:
+//!   - name: fs_read
+//!     wasm_path: ./tools/fs.wasm
+//!     capabilities:
+//!       filesystem:
+//!         read: ["./workspace/**"]
+//! "#;
+//!
+//! let config = load_str(yaml, "tpt-mcpbox.yaml").expect("parses");
+//! let report = validate(&config, ValidationMode::Serve);
+//! assert!(report.is_ok(), "unexpected diagnostics: {report:?}");
+//! assert_eq!(
+//!     config.tools[0].capabilities.filesystem.read,
+//!     vec!["./workspace/**"]
+//! );
+//! ```
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs, missing_debug_implementations)]
 
-/// Crate version, surfaced by `mcpbox --version` and `/healthz`.
+pub mod load;
+pub mod model;
+pub mod reload;
+pub mod schema;
+pub mod secrets;
+pub mod units;
+pub mod validate;
+
+pub use load::{
+    DEFAULT_CONFIG_FILENAME, LayeredConfig, LoadedConfig, SourceKind, discover, load_file, load_str,
+};
+pub use model::{
+    AuditConfig, CONFIG_VERSION, Capabilities, Config, Effect, FilesystemCapabilities,
+    HttpServerConfig, HttpUpstream, Limits, LogLevel, LoggingConfig, MetricsConfig, PolicyConfig,
+    RateLimit, Rule, SecretBinding, ServerConfig, StdioUpstream, ToolConfig, Transport,
+    UpstreamConfig, UpstreamTransport,
+};
+pub use schema::json_schema;
+pub use secrets::{Redactor, SecretStore, SecretString};
+pub use units::{UnitError, format_byte_size, format_duration, parse_byte_size, parse_duration};
+pub use validate::{Diagnostic, Severity, ValidationMode, ValidationReport, validate};
+
+/// Crate version, surfaced by `tpt-mcpbox --version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
