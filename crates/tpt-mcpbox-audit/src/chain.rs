@@ -51,6 +51,14 @@ pub enum AuditError {
     /// An entry could not be encoded or decoded.
     #[error("audit entry is not valid JSON: {0}")]
     Json(#[from] serde_json::Error),
+    /// Another process holds the log's lock file.
+    #[error(
+        "audit log is in use by another process (lock file {path}); if no tpt-mcpbox is running, delete that file"
+    )]
+    Locked {
+        /// Path of the lock file.
+        path: String,
+    },
     /// The chain is broken at `seq`.
     #[error("audit chain broken at entry {seq}: {reason}")]
     Broken {
@@ -75,6 +83,45 @@ pub struct VerifyReport {
 pub struct AuditLog {
     path: PathBuf,
     state: Mutex<Head>,
+    _lock: LockFile,
+}
+
+/// Exclusive claim on a log file, released when the `AuditLog` is dropped.
+///
+/// Two writers on one file would interleave entries and break the chain, so a
+/// second `open` is refused while the lock exists. The claim is a file created
+/// with `create_new`, which is atomic on every platform. If a process is killed
+/// without releasing it, the file stays and must be removed by hand.
+#[derive(Debug)]
+struct LockFile {
+    path: PathBuf,
+}
+
+impl LockFile {
+    fn acquire(log: &Path) -> Result<Self, AuditError> {
+        let mut name = log.as_os_str().to_owned();
+        name.push(".lock");
+        let path = PathBuf::from(name);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                // The PID is only for the person who has to clear a stale lock.
+                let _ = writeln!(file, "{}", std::process::id());
+                Ok(Self { path })
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(AuditError::Locked {
+                    path: path.display().to_string(),
+                })
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+impl Drop for LockFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 #[derive(Debug)]
@@ -96,10 +143,13 @@ impl AuditLog {
     /// or an I/O error when the file cannot be opened.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, AuditError> {
         let path = path.into();
-        let report = verify(&path)?;
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
+        // Claim the log before reading it, so no other writer can change the
+        // chain between verification and the first append.
+        let lock = LockFile::acquire(&path)?;
+        let report = verify(&path)?;
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         Ok(Self {
             path,
@@ -108,6 +158,7 @@ impl AuditLog {
                 next_seq: report.entries,
                 prev: report.head,
             }),
+            _lock: lock,
         })
     }
 
@@ -363,5 +414,37 @@ mod tests {
         let a = compute_hash(0, 1, GENESIS, "k", &json!({ "a": 1, "b": 2 })).unwrap();
         let b = compute_hash(0, 1, GENESIS, "k", &json!({ "b": 2, "a": 1 })).unwrap();
         assert_eq!(a, b);
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn second_writer_is_refused_until_the_first_is_dropped() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+
+        let first = AuditLog::open(&path).unwrap();
+        assert!(matches!(
+            AuditLog::open(&path),
+            Err(AuditError::Locked { .. })
+        ));
+
+        drop(first);
+        assert!(AuditLog::open(&path).is_ok());
+    }
+
+    #[test]
+    fn lock_file_is_removed_on_drop() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let log = AuditLog::open(&path).unwrap();
+        assert!(dir.path().join("audit.jsonl.lock").exists());
+        drop(log);
+        assert!(!dir.path().join("audit.jsonl.lock").exists());
     }
 }
