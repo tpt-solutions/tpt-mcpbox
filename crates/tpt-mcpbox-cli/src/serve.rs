@@ -22,7 +22,9 @@ use tpt_mcpbox_config::secrets::SecretStore;
 use tpt_mcpbox_config::validate::{self, Severity, ValidationMode};
 use tpt_mcpbox_policy::Policy;
 use tpt_mcpbox_protocol::Implementation;
-use tpt_mcpbox_protocol::model::{ServerCapabilities, ToolsCapability};
+use tpt_mcpbox_protocol::model::{
+    PromptsCapability, ResourcesCapability, ServerCapabilities, ToolsCapability,
+};
 use tpt_mcpbox_protocol::server::Handler;
 use tpt_mcpbox_protocol::session::SessionConfig;
 use tpt_mcpbox_protocol::tools::Tool;
@@ -124,22 +126,44 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
 
     for upstream in config.upstreams.iter().filter(|u| u.enabled) {
         let connection = connect(upstream, &secrets, &redactor)?;
-        connection
-            .initialize()
-            .await
-            .map_err(|error| format!("upstream `{}`: {error}", upstream.name))?;
-        let listed = connection
-            .list_tools()
-            .await
-            .map_err(|error| format!("upstream `{}`: {error}", upstream.name))?;
+        let fail = |error: tpt_mcpbox_proxy::UpstreamError| {
+            format!("upstream `{}`: {error}", upstream.name)
+        };
+
+        let handshake = connection.initialize().await.map_err(fail)?;
+        let listed = connection.list_tools().await.map_err(fail)?;
+        // Only ask for what the upstream says it has, so a server without
+        // resources is not sent a request it would answer with an error.
+        let resources = if handshake.capabilities.resources.is_some() {
+            connection.list_resources().await.map_err(fail)?
+        } else {
+            Vec::new()
+        };
+        let prompts = if handshake.capabilities.prompts.is_some() {
+            connection.list_prompts().await.map_err(fail)?
+        } else {
+            Vec::new()
+        };
+
         let visible = Visibility::new(upstream)?;
         let tools: Vec<Tool> = listed
             .into_iter()
             .filter(|tool| visible.allows(&tool.name))
             .collect();
-        let gate = PolicyGate::new(upstream.name.clone(), connection, Arc::clone(&policy));
+        let gate = Arc::new(PolicyGate::new(
+            upstream.name.clone(),
+            connection,
+            Arc::clone(&policy),
+        ));
+        let prefix = upstream.prefix.as_deref();
         router
-            .add_upstream(upstream.prefix.as_deref(), gate, tools)
+            .add_upstream(prefix, Arc::clone(&gate), tools)
+            .map_err(|error| format!("upstream `{}`: {error}", upstream.name))?;
+        router
+            .add_upstream_resources(Arc::clone(&gate), resources)
+            .map_err(|error| format!("upstream `{}`: {error}", upstream.name))?;
+        router
+            .add_upstream_prompts(prefix, gate, prompts)
             .map_err(|error| format!("upstream `{}`: {error}", upstream.name))?;
     }
 
@@ -165,6 +189,13 @@ pub(crate) struct Hub {
 pub(crate) async fn serve_stdio(hub: Hub) -> Result<(), String> {
     let capabilities = ServerCapabilities {
         tools: Some(ToolsCapability {
+            list_changed: Some(false),
+        }),
+        resources: Some(ResourcesCapability {
+            subscribe: Some(false),
+            list_changed: Some(false),
+        }),
+        prompts: Some(PromptsCapability {
             list_changed: Some(false),
         }),
         ..ServerCapabilities::default()

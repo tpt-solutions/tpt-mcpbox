@@ -134,7 +134,7 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 ## Phase 5 — Router & Rate Limiter (`tpt-mcpbox-router`)
 
 - [~] Dispatch `tools/call` to Wasm runtime or an upstream proxy target by tool origin — **done for tools:** `dispatch::Router::call` routes to Wasm (run on a blocking thread, policy-checked there) or to a `PolicyGate`, after the shutdown gate and limiter (7 tests). **Open:** resources and prompts; wiring `notifications/cancelled` into the `CancelToken`.
-- [~] Namespaced aggregation: merge `tools`/`resources`/`prompts` from Wasm + all upstreams; prefix/rename on conflict; `list_changed` fan-in — **done for tools:** `<prefix><name>` for upstreams, all-or-nothing refusal on conflict (no silent rename). **Open:** resources, prompts, `list_changed` fan-in.
+- [~] Namespaced aggregation: merge `tools`/`resources`/`prompts` from Wasm + all upstreams; prefix/rename on conflict; `list_changed` fan-in — **done for tools:** `<prefix><name>` for upstreams, all-or-nothing refusal on conflict (no silent rename). **Resources and prompts aggregated:** resources by URI (duplicate URIs refused), prompts as `<prefix><name>`. **Open:** resource templates, subscriptions, `list_changed` fan-in.
 - [~] Per-tool rate limit + max concurrency; per-client (session) rate limit + concurrency; queue vs reject policy — **done:** `limiter::Limiter` (token bucket + semaphore per tool and per client, all-or-nothing admission, 9 tests). Reject-only; queue-and-wait **open**. Client gates are never evicted (grows with distinct session ids) — **open**.
 - [ ] Global request timeout, backpressure, structured overload errors
 - [~] Graceful shutdown: stop accepting, drain in-flight, checkpoint audit log — **done:** `lifecycle::Lifecycle` (`begin` gates new calls, `shutdown(timeout)` drains with `Drain::{Completed, TimedOut}`, 5 tests). Audit checkpoint **open** (Phase 9).
@@ -147,7 +147,7 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 - [ ] Capability reconciliation between agent, proxy, and each upstream
 - [~] Enforce policy on every proxied call: inspect `tools/call` args, `resources/read` URIs, `prompts/get` args — **done for `tools/call`:** `gate::PolicyGate` denies before anything is sent (3 tests). **Open:** `resources/read` URIs, `prompts/get` args.
 - [ ] Tool/resource/prompt filtering: allowlist/denylist, rename, description overrides
-- [ ] Full-parity forwarding: resources (list/read/templates/subscribe/updated), prompts (list/get), `completion/complete`
+- [~] Full-parity forwarding: resources (list/read/templates/subscribe/updated), prompts (list/get), `completion/complete` — **done:** `resources/list`, `resources/read`, `prompts/list`, `prompts/get` through the router and proxy, with policy checks (URI rules and method rules) and audit records; upstreams are asked only for the capabilities they advertise (4 tests in router, 3 in proxy). **Open:** templates, subscribe/updated, `completion/complete`.
 - [ ] Forward client features to upstream where needed (`roots`, `sampling`) with policy gate
 - [ ] Redact/scan upstream responses per policy (optional secret/PII pattern check)
 
