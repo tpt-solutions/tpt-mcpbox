@@ -2318,6 +2318,7 @@ dependencies = [
  "tpt-mcpbox-policy",
  "tpt-mcpbox-protocol",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
