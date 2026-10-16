@@ -29,6 +29,7 @@ Thumbs.db
 /book/
 
 # Local build/verification logs produced by ad-hoc cargo runs
+/logs/
 *.log
 build.out
 build.err
