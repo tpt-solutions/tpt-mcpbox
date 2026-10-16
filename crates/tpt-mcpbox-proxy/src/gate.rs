@@ -15,7 +15,8 @@ use serde_json::{Map, Value};
 use tpt_mcpbox_policy::{Decision, Policy, PolicyInput};
 use tpt_mcpbox_protocol::tools::CallToolResult;
 
-use crate::upstream::{Client, UpstreamError};
+use crate::connection::Connection;
+use crate::upstream::UpstreamError;
 
 /// Why a proxied call did not complete.
 #[derive(Debug, thiserror::Error)]
@@ -43,20 +44,31 @@ fn rule_suffix(rule_id: &Option<String>) -> String {
 #[derive(Debug)]
 pub struct PolicyGate {
     upstream: String,
-    client: Client,
+    client: Connection,
     policy: Arc<Policy>,
 }
 
 impl PolicyGate {
-    /// Wraps `client`. `upstream` is the configured upstream name, used only
-    /// for diagnostics.
+    /// Wraps a stdio or HTTP client. `upstream` is the configured upstream
+    /// name, used only for diagnostics.
     #[must_use]
-    pub fn new(upstream: impl Into<String>, client: Client, policy: Arc<Policy>) -> Self {
+    pub fn new(
+        upstream: impl Into<String>,
+        client: impl Into<Connection>,
+        policy: Arc<Policy>,
+    ) -> Self {
         Self {
             upstream: upstream.into(),
-            client,
+            client: client.into(),
             policy,
         }
+    }
+
+    /// The transport this gate forwards to. Used to run the handshake and
+    /// tool listing before the gate starts serving calls.
+    #[must_use]
+    pub fn connection(&self) -> &Connection {
+        &self.client
     }
 
     /// Name of the upstream this gate fronts.
@@ -147,7 +159,7 @@ mod gate_tests {
     use tpt_mcpbox_config::model::{Effect, PolicyConfig, Rule};
 
     use super::*;
-    use crate::upstream::UpstreamOptions;
+    use crate::upstream::{Client, UpstreamOptions};
 
     fn rule(id: &str, effect: Effect, tool: &str) -> Rule {
         Rule {

@@ -10,11 +10,13 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, missing_debug_implementations)]
 
+pub mod connection;
 pub mod gate;
 pub mod http;
 pub mod ops;
 pub mod upstream;
 
+pub use connection::Connection;
 pub use gate::{PolicyGate, ProxyError};
 pub use http::HttpClient;
 pub use upstream::{Client, UpstreamError, UpstreamOptions};
