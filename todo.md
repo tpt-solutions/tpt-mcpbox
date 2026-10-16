@@ -84,7 +84,7 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 - [x] Config discovery (`--config`, `$MCPBOX_CONFIG`, CWD, XDG/`%APPDATA%`), layering (`tpt-mcpbox.local.yaml` overlay adds tools/upstreams only), defaults
 - [x] Secrets (`secrets::SecretStore`): load from process env + gitignored `.env`; `secret → header` mapping (e.g. `GITHUB_TOKEN` → `Authorization: Bearer …`)
 - [x] `SecretString` wrapper: zeroize on drop, `Debug`/`Display` redaction, never serialized
-- [~] Central redaction filter applied to logs, error messages, audit entries (`secrets::Redactor` implemented; **done for upstream stderr** in the proxy, 1 test). **Open:** global `tracing` layer, upstream error messages, audit entries (Phase 9).
+- [~] Central redaction filter applied to logs, error messages, audit entries (`secrets::Redactor` implemented; **done for upstream stderr** in the proxy, and **for every agent-facing reply** (tool output, error text, upstream messages) via `ToolHandler::with_redactor`, verified end to end). **Open:** global `tracing` layer, audit entries (Phase 9).
 - [ ] Hot reload: watch config, atomic swap, `SIGHUP` (Unix) / equivalent; reload-safe pool draining (`reload::watch_config` polling watcher + validate-before-swap `ReloadHandle` done; `SIGHUP` and pool draining outstanding, latter needs Phase 4)
 - [x] `tpt-mcpbox validate` command (plus `tpt-mcpbox schema`)
 
@@ -179,7 +179,7 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 
 ## Phase 10 — CLI & Developer Experience (`tpt-mcpbox-cli`)
 
-- [~] `tpt-mcpbox run` (start proxy; `--config`, `--transport`, `--dry-run`) — **done:** `run --config` builds the hub (validation, secrets, policy, audit, Wasm tools, stdio and HTTP upstreams with allow/deny globs) and serves stdio; verified end to end with the test guest and a denied call. **Open:** `--transport` and `--dry-run` flags, HTTP server transport (warns and is ignored), signal-driven shutdown (stdin EOF only), resources and prompts.
+- [~] `tpt-mcpbox run` (start proxy; `--config`, `--transport`, `--dry-run`) — **done:** `run --config` builds the hub (validation, secrets, policy, audit, Wasm tools, stdio and HTTP upstreams with allow/deny globs) and serves stdio; verified end to end with the test guest and a denied call. Ctrl-C and SIGTERM stop the stdio loop and drain in-flight calls (compiled; not exercised interactively). **Open:** `--transport` and `--dry-run` flags, HTTP server transport (warns and is ignored), resources and prompts.
 - [ ] `tpt-mcpbox validate`, `tpt-mcpbox schema` (emit config JSON Schema)
 - [ ] `tpt-mcpbox policy test <input.json>` (explain a decision)
 - [ ] `tpt-mcpbox tools ls` / `tpt-mcpbox tools call` (local invocation for debugging)

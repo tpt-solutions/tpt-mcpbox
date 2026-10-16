@@ -16,7 +16,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use tpt_mcpbox_config::load;
@@ -243,8 +242,8 @@ fn run_command(config_path: Option<&Path>) -> Result<ExitCode, String> {
         .build()
         .map_err(|error| format!("cannot start the async runtime: {error}"))?;
     runtime.block_on(async {
-        let router = serve::build_router(&loaded.config, base).await?;
-        serve::serve_stdio(Arc::new(router)).await
+        let hub = serve::build_router(&loaded.config, base).await?;
+        serve::serve_stdio(hub).await
     })?;
     Ok(ExitCode::SUCCESS)
 }

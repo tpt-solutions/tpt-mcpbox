@@ -44,7 +44,7 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// # Errors
 ///
 /// Returns a message naming the first thing that prevented startup.
-pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Router, String> {
+pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, String> {
     if !config.server.has_stdio() {
         return Err(
             "no supported server transport is enabled; add `stdio` under server.transports"
@@ -143,16 +143,26 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Router,
             .map_err(|error| format!("upstream `{}`: {error}", upstream.name))?;
     }
 
-    Ok(router)
+    Ok(Hub {
+        router: Arc::new(router),
+        redactor,
+    })
 }
 
-/// Serves the router on stdin/stdout until the agent disconnects, then drains
-/// in-flight calls.
+/// A configured hub: the router that serves calls, and the redactor that keeps
+/// secret values out of every reply.
+pub(crate) struct Hub {
+    pub(crate) router: Arc<Router>,
+    pub(crate) redactor: Arc<Redactor>,
+}
+
+/// Serves the hub on stdin/stdout until the agent disconnects or the process is
+/// asked to stop, then drains in-flight calls.
 ///
 /// # Errors
 ///
 /// Returns a message if the stdio transport fails.
-pub(crate) async fn serve_stdio(router: Arc<Router>) -> Result<(), String> {
+pub(crate) async fn serve_stdio(hub: Hub) -> Result<(), String> {
     let capabilities = ServerCapabilities {
         tools: Some(ToolsCapability {
             list_changed: Some(false),
@@ -160,12 +170,44 @@ pub(crate) async fn serve_stdio(router: Arc<Router>) -> Result<(), String> {
         ..ServerCapabilities::default()
     };
     let session = SessionConfig::new(Implementation::new("tpt-mcpbox", VERSION), capabilities);
-    let handler: Arc<dyn Handler> = Arc::new(ToolHandler::new(Arc::clone(&router)));
+    let handler: Arc<dyn Handler> = Arc::new(
+        ToolHandler::new(Arc::clone(&hub.router)).with_redactor(Arc::clone(&hub.redactor)),
+    );
 
-    let served = stdio::serve(handler, session, StdioOptions::default()).await;
-    let drain = router.shutdown(DRAIN_TIMEOUT).await;
+    let served = tokio::select! {
+        result = stdio::serve(handler, session, StdioOptions::default()) => result,
+        () = shutdown_signal() => {
+            tracing::info!("stop requested; no longer reading requests");
+            Ok(())
+        }
+    };
+    let drain = hub.router.shutdown(DRAIN_TIMEOUT).await;
     tracing::info!(?drain, "shut down");
     served.map_err(|error| format!("stdio transport failed: {error}"))
+}
+
+/// Resolves on Ctrl-C, or on SIGTERM where the platform has it.
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = ctrl_c => {}
+                    _ = terminate.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = ctrl_c.await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = ctrl_c.await;
+    }
 }
 
 fn connect(
