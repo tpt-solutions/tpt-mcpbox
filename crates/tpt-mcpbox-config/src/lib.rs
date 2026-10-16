@@ -58,8 +58,8 @@ pub use load::{
 pub use model::{
     AuditConfig, CONFIG_VERSION, Capabilities, Config, Effect, FilesystemCapabilities,
     HttpServerConfig, HttpUpstream, Limits, LogLevel, LoggingConfig, MetricsConfig, PolicyConfig,
-    RateLimit, Rule, SecretBinding, ServerConfig, StdioUpstream, ToolConfig, Transport,
-    UpstreamConfig, UpstreamTransport,
+    Quota, RateLimit, Rule, RuleConstraints, SecretBinding, ServerConfig, StdioUpstream,
+    ToolConfig, Transport, UpstreamConfig, UpstreamTransport,
 };
 pub use schema::json_schema;
 pub use secrets::{Redactor, SecretStore, SecretString};

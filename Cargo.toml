@@ -43,6 +43,7 @@ clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
 globset = "0.4"
 http = "1"
+regorus = { version = "0.13", default-features = false, features = ["arc"] }
 serde = { version = "1", features = ["derive"] }
 schemars = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"

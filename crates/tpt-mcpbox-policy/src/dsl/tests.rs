@@ -15,6 +15,9 @@ fn rule(id: &str, effect: Effect) -> Rule {
         args: BTreeMap::new(),
         hosts: Vec::new(),
         paths: Vec::new(),
+        caller: None,
+        uris: Vec::new(),
+        constraints: None,
     }
 }
 
@@ -322,7 +325,7 @@ fn rego_is_refused_rather_than_silently_ignored() {
     };
     assert!(matches!(
         Engine::from_config(&cfg),
-        Err(PolicyError::RegoNotSupported)
+        Err(PolicyError::RegoInDslOnly)
     ));
 }
 
@@ -345,4 +348,188 @@ fn cache_is_flushed_at_its_limit() {
         let _ = engine.evaluate(&call(&format!("tool_{i}")));
     }
     assert!(cache_len(&engine) <= CACHE_LIMIT);
+}
+
+fn with_caller(mut input: PolicyInput, caller: &str) -> PolicyInput {
+    input.caller = Some(caller.to_owned());
+    input
+}
+
+fn with_uris(mut input: PolicyInput, uris: &[&str]) -> PolicyInput {
+    input.uris = uris.iter().map(|u| (*u).to_owned()).collect();
+    input
+}
+
+fn quota_rule(id: &str, max_calls: u32, window: Duration) -> Rule {
+    let mut allow = rule(id, Effect::Allow);
+    allow.tool = Some("search".to_owned());
+    allow.constraints = Some(RuleConstraints {
+        quota: Some(Quota { max_calls, window }),
+        ..RuleConstraints::default()
+    });
+    allow
+}
+
+#[test]
+fn caller_glob_requires_a_known_caller() {
+    let mut allow = rule("sessions", Effect::Allow);
+    allow.caller = Some("session-*".to_owned());
+    let engine = engine(vec![allow]);
+
+    assert!(
+        engine
+            .evaluate(&with_caller(call("t"), "session-7"))
+            .is_allowed()
+    );
+    assert!(
+        !engine
+            .evaluate(&with_caller(call("t"), "intruder"))
+            .is_allowed()
+    );
+    assert!(!engine.evaluate(&call("t")).is_allowed());
+}
+
+#[test]
+fn allow_uri_rule_must_cover_every_requested_uri() {
+    let mut allow = rule("docs", Effect::Allow);
+    allow.uris = vec!["file:///srv/docs/**".to_owned()];
+    let engine = engine(vec![allow]);
+
+    let inside = with_uris(
+        call("read"),
+        &["file:///srv/docs/a.md", "file:///srv/docs/b/c.md"],
+    );
+    assert!(engine.evaluate(&inside).is_allowed());
+
+    let smuggled = with_uris(
+        call("read"),
+        &["file:///srv/docs/a.md", "file:///srv/secret.txt"],
+    );
+    assert!(!engine.evaluate(&smuggled).is_allowed());
+}
+
+#[test]
+fn deny_uri_rule_needs_only_one_covered_uri() {
+    let mut deny = rule("secrets", Effect::Deny);
+    deny.uris = vec!["file:///srv/secrets/**".to_owned()];
+    let mut allow = rule("all-files", Effect::Allow);
+    allow.uris = vec!["file:///**".to_owned()];
+    let engine = engine(vec![deny, allow]);
+
+    let mixed = with_uris(
+        call("read"),
+        &["file:///srv/public.md", "file:///srv/secrets/key"],
+    );
+    let decision = engine.evaluate(&mixed);
+    assert!(!decision.is_allowed());
+    assert_eq!(decision.rule_id.as_deref(), Some("secrets"));
+}
+
+#[test]
+fn uri_that_cannot_be_normalised_is_never_allowed() {
+    let mut allow = rule("docs", Effect::Allow);
+    allow.uris = vec!["file:///srv/docs/**".to_owned()];
+    let engine = engine(vec![allow]);
+
+    let encoded = with_uris(call("read"), &["file:///srv/docs/%2e%2e/secret"]);
+    assert!(!engine.evaluate(&encoded).is_allowed());
+    let escaping = with_uris(call("read"), &["file:///srv/docs/../../etc/passwd"]);
+    assert!(!engine.evaluate(&escaping).is_allowed());
+}
+
+#[test]
+fn quota_admits_up_to_its_budget_then_refuses() {
+    let engine = engine(vec![quota_rule("search", 2, Duration::from_secs(60))]);
+    let base = Instant::now();
+    let input = with_caller(call("search"), "alice");
+
+    assert!(engine.evaluate_at(&input, base).is_allowed());
+    assert!(
+        engine
+            .evaluate_at(&input, base + Duration::from_secs(1))
+            .is_allowed()
+    );
+    let refused = engine.evaluate_at(&input, base + Duration::from_secs(2));
+    assert!(!refused.is_allowed());
+    assert_eq!(refused.rule_id.as_deref(), Some("search"));
+    assert!(refused.reason.contains("quota"));
+}
+
+#[test]
+fn quota_budget_recovers_as_the_window_slides() {
+    let engine = engine(vec![quota_rule("search", 1, Duration::from_secs(60))]);
+    let base = Instant::now();
+    let input = with_caller(call("search"), "alice");
+
+    assert!(engine.evaluate_at(&input, base).is_allowed());
+    assert!(
+        !engine
+            .evaluate_at(&input, base + Duration::from_secs(59))
+            .is_allowed()
+    );
+    assert!(
+        engine
+            .evaluate_at(&input, base + Duration::from_secs(60))
+            .is_allowed()
+    );
+}
+
+#[test]
+fn quota_is_counted_per_caller() {
+    let engine = engine(vec![quota_rule("search", 1, Duration::from_secs(60))]);
+    let base = Instant::now();
+
+    let alice = with_caller(call("search"), "alice");
+    let bob = with_caller(call("search"), "bob");
+    assert!(engine.evaluate_at(&alice, base).is_allowed());
+    assert!(!engine.evaluate_at(&alice, base).is_allowed());
+    assert!(engine.evaluate_at(&bob, base).is_allowed());
+}
+
+#[test]
+fn quota_outcomes_are_never_cached() {
+    let engine = engine(vec![quota_rule("search", 1, Duration::from_secs(60))]);
+    let base = Instant::now();
+    let input = with_caller(call("search"), "alice");
+
+    assert!(engine.evaluate_at(&input, base).is_allowed());
+    assert!(!engine.evaluate_at(&input, base).is_allowed());
+    assert_eq!(cache_len(&engine), 0);
+}
+
+#[test]
+fn allow_with_constraints_reports_its_limits() {
+    let mut allow = rule("bounded", Effect::Allow);
+    allow.tool = Some("fs_read".to_owned());
+    allow.constraints = Some(RuleConstraints {
+        quota: None,
+        memory_limit: Some(32_000_000),
+        time_limit: Some(Duration::from_secs(2)),
+    });
+    let engine = engine(vec![allow]);
+
+    let decision = engine.evaluate(&call("fs_read"));
+    assert!(decision.is_allowed());
+    let limits = decision.constraints.expect("constraints reported");
+    assert_eq!(limits.memory_limit, Some(32_000_000));
+    assert_eq!(limits.time_limit, Some(Duration::from_secs(2)));
+    assert!(engine.evaluate(&call("other")).constraints.is_none());
+}
+
+#[test]
+fn dry_run_does_not_spend_quota_on_refused_calls_it_reports_as_allowed() {
+    let mut cfg = config(vec![quota_rule("search", 1, Duration::from_secs(60))]);
+    cfg.dry_run = true;
+    let engine = Engine::from_config(&cfg).expect("policy compiles");
+    let base = Instant::now();
+    let input = with_caller(call("search"), "alice");
+
+    assert!(engine.evaluate_at(&input, base).is_allowed());
+    let second = engine.evaluate_at(&input, base);
+    assert!(second.is_allowed(), "dry-run reports allow");
+    assert!(
+        second.is_dry_run_override(),
+        "but records the would-be refusal"
+    );
+    assert_eq!(second.would_be, Effect::Deny);
 }

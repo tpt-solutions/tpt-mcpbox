@@ -550,6 +550,29 @@ fn validate_policy(config: &Config, mode: ValidationMode, report: &mut Validatio
                 "rule ids are recorded in audit entries and must be unique",
             ));
         }
+        if let Some(constraints) = &rule.constraints {
+            if rule.effect == Effect::Deny {
+                report.diagnostics.push(Diagnostic::error_with_hint(
+                    format!("{path}.constraints"),
+                    "constraints only apply to `allow` rules",
+                    "remove `constraints`, or change the rule to `effect: allow`",
+                ));
+            }
+            if let Some(quota) = &constraints.quota {
+                if quota.max_calls == 0 {
+                    report.diagnostics.push(Diagnostic::error(
+                        format!("{path}.constraints.quota.max_calls"),
+                        "a quota must allow at least one call",
+                    ));
+                }
+                if quota.window.is_zero() {
+                    report.diagnostics.push(Diagnostic::error(
+                        format!("{path}.constraints.quota.window"),
+                        "a quota window must be longer than zero",
+                    ));
+                }
+            }
+        }
         if rule.effect == Effect::Allow && rule.tool.is_none() && rule.method.is_none() {
             allow_catch_all = allow_catch_all.or(Some(rule.id.as_str()));
         }
@@ -799,6 +822,53 @@ policy:
     fn missing_rego_module_is_refused() {
         let config = parse("policy:\n  rego: ./missing.rego\n");
         assert!(errors(&config)[0].contains("does not exist"));
+    }
+
+    #[test]
+    fn constraints_on_a_deny_rule_are_refused() {
+        let config = parse(
+            "policy:\n  rules:\n    - id: no\n      effect: deny\n      tool: x\n      constraints:\n        memory_limit: 1MB\n",
+        );
+        let errors = errors(&config);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("only apply to `allow` rules"));
+    }
+
+    #[test]
+    fn zero_quota_is_refused() {
+        let config = parse(
+            "policy:\n  rules:\n    - id: q\n      effect: allow\n      tool: x\n      constraints:\n        quota:\n          max_calls: 0\n          window: 1m\n",
+        );
+        let errors = errors(&config);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("at least one call"));
+    }
+
+    #[test]
+    fn zero_quota_window_is_refused() {
+        let config = parse(
+            "policy:\n  rules:\n    - id: q\n      effect: allow\n      tool: x\n      constraints:\n        quota:\n          max_calls: 5\n          window: 0s\n",
+        );
+        assert!(errors(&config)[0].contains("longer than zero"));
+    }
+
+    #[test]
+    fn quota_parses_with_human_units() {
+        let config = parse(
+            "policy:\n  rules:\n    - id: q\n      effect: allow\n      tool: search\n      caller: \"session-*\"\n      uris: [\"file:///srv/**\"]\n      constraints:\n        quota:\n          max_calls: 10\n          window: 1m\n        time_limit: 2s\n",
+        );
+        assert!(errors(&config).is_empty(), "{:?}", errors(&config));
+        let rule = &config.policy.rules[0];
+        assert_eq!(rule.caller.as_deref(), Some("session-*"));
+        assert_eq!(rule.uris, vec!["file:///srv/**".to_owned()]);
+        let constraints = rule.constraints.as_ref().expect("constraints");
+        let quota = constraints.quota.as_ref().expect("quota");
+        assert_eq!(quota.max_calls, 10);
+        assert_eq!(quota.window, std::time::Duration::from_secs(60));
+        assert_eq!(
+            constraints.time_limit,
+            Some(std::time::Duration::from_secs(2))
+        );
     }
 
     #[test]

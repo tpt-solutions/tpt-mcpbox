@@ -4,7 +4,7 @@
 //! Input and output types shared by every policy evaluator.
 
 use serde::{Deserialize, Serialize};
-use tpt_mcpbox_config::Effect;
+use tpt_mcpbox_config::{Effect, RuleConstraints};
 
 /// Everything a policy rule may look at for one request.
 ///
@@ -15,6 +15,9 @@ use tpt_mcpbox_config::Effect;
 pub struct PolicyInput {
     /// MCP method, e.g. `tools/call`.
     pub method: String,
+    /// Identity of the calling client or session, when the transport knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<String>,
     /// Tool name for `tools/call`, taken from `params.name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
@@ -27,10 +30,13 @@ pub struct PolicyInput {
     /// Filesystem path the request touches, when there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fs_path: Option<String>,
+    /// Resource URIs the request reads or subscribes to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uris: Vec<String>,
 }
 
 /// The result of evaluating one [`PolicyInput`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Decision {
     /// What the proxy enforces. In dry-run mode this is always `Allow`.
     pub effect: Effect,
@@ -41,6 +47,10 @@ pub struct Decision {
     pub rule_id: Option<String>,
     /// Human-readable explanation, recorded in the audit log.
     pub reason: String,
+    /// Limits the runtime must enforce for an allowed call. `None` for denials
+    /// and for allows that carry no constraints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<RuleConstraints>,
 }
 
 impl Decision {

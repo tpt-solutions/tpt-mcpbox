@@ -90,22 +90,24 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 
 ## Phase 3 — Policy Engine (`tpt-mcpbox-policy`)
 
-> **Status:** `tpt-mcpbox-policy` has the YAML DSL evaluator (`Engine`), host and
-> path normalisation (fail-closed on traversal and authority tricks), dry-run,
-> and a decision cache keyed on normalised input. Compiling a config with
-> `policy.rego` set is refused until the Rego evaluator exists. Still open:
-> caller identity and URI inputs, allow-with-constraints, DSL quotas, multi-policy
-> precedence, Rego, reload invalidation, `regorus` fixtures and property tests.
+> **Status:** complete except where noted. `tpt-mcpbox-policy` composes the YAML
+> DSL and an embedded Rego module (`regorus`, no `std` feature, so no Spectre
+> libraries are needed) into one `Policy`. Opinions combine as: any deny wins,
+> then any allow admits with the tightest limits, then `policy.default`.
+> Still open: wiring `Policy::reload` into the config `ReloadHandle` (needs the
+> runtime in Phase 4 to be useful); the runtime enforcement of allow-time limits
+> (Phase 4).
 
-- [ ] Policy input schema: caller identity/session, tool name, method, arguments, requested resource URIs, target host, fs path (partial: `PolicyInput` has method, tool, arguments, host, fs path; identity and URIs missing)
-- [ ] Decision type: allow / deny / allow-with-constraints + reason + rule id (for audit) (partial: allow/deny, reason, rule id; constraints missing)
-- [ ] Deny-by-default evaluation; explicit precedence and merge rules for multiple policies (DSL is deny-by-default; multi-policy merge missing)
-- [ ] YAML DSL evaluator: match tool + method + arg predicates, host/path glob checks, quotas (quotas missing)
-- [ ] Rego evaluator via `regorus`: load `.rego` modules, stable input document, decision logging
-- [ ] Engine selection per policy; combine YAML + Rego results conservatively (most restrictive wins)
-- [ ] Decision cache keyed on normalized input; invalidate on config reload (cache is per-engine, so a rebuilt engine starts empty; reload handle does not rebuild the engine yet)
+- [x] Policy input schema: caller identity (`caller`), tool, method, arguments, host, fs path, resource URIs (`uris`)
+- [x] Decision type: allow / deny / allow-with-constraints + reason + rule id (`Decision::constraints` carries memory/time limits and the quota)
+- [x] Deny-by-default evaluation; explicit precedence: DSL rules in file order, then Rego; any deny wins; `policy.default` only when no evaluator has an opinion
+- [x] YAML DSL evaluator: tool + method + argument predicates, caller globs, host/path/URI globs, per-caller sliding-window quotas
+- [x] Rego evaluator via `regorus`: `package tpt.mcpbox`, `allow` query, stable input document (`PolicyInput` as JSON); evaluation errors and undefined `allow` fail closed
+- [x] Engine selection per policy; combine YAML + Rego conservatively (most restrictive wins)
+- [x] Decision cache keyed on normalized input; quota outcomes are never cached; `Policy::reload` builds a fresh engine and carries quota counters over for surviving rules
 - [x] Dry-run / audit-only mode (log what would be denied without blocking) — engine reports `would_be` and reason; writing the audit entry is Phase 9
-- [ ] Tests: allow/deny matrices, glob edge cases, path traversal, Unicode/host-normalization, `regorus` policy fixtures; property tests (25 unit tests done; Unicode, Rego fixtures and property tests missing)
+- [x] Tests: allow/deny matrices, glob edge cases, path traversal, Unicode look-alike hosts, URI normalisation, `regorus` fixtures (allow, deny, undefined, error, input shape), quotas, reload, generated-input property test (57 policy tests; 77 config tests cover the new rule validation)
+
 
 ## Phase 4 — Wasm Runtime (`tpt-mcpbox-runtime`)
 

@@ -413,6 +413,54 @@ pub struct Rule {
     /// Filesystem path globs this rule covers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
+    /// Caller identity glob, e.g. `session-*`. Requests without a caller never
+    /// match a rule that sets this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<String>,
+    /// Resource URI globs this rule covers, e.g. `file:///srv/docs/**`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uris: Vec<String>,
+    /// Limits attached to an `allow` rule: the call is allowed *with* these
+    /// constraints. Rejected on `deny` rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<RuleConstraints>,
+}
+
+/// Limits attached to an allowing rule.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RuleConstraints {
+    /// Call budget per caller, enforced by the policy engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<Quota>,
+    /// Memory ceiling handed to the runtime, e.g. `"32MB"`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "byte_size_option"
+    )]
+    #[schemars(with = "String")]
+    pub memory_limit: Option<u64>,
+    /// Wall-clock ceiling handed to the runtime, e.g. `"2s"`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "duration_option"
+    )]
+    #[schemars(with = "String")]
+    pub time_limit: Option<Duration>,
+}
+
+/// A call budget: at most `max_calls` per caller within a sliding `window`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Quota {
+    /// Calls allowed inside one window.
+    pub max_calls: u32,
+    /// Sliding window length, e.g. `"1m"`.
+    #[serde(with = "duration_required")]
+    #[schemars(with = "String")]
+    pub window: Duration,
 }
 
 /// Policy evaluation configuration.
@@ -645,6 +693,40 @@ pub(crate) mod duration_option {
                 .map_err(serde::de::Error::custom),
             Some(other) => Err(serde::de::Error::custom(format!(
                 "expected a duration like `2s`, got {other:?}"
+            ))),
+        }
+    }
+}
+
+/// Serde adapter for a mandatory duration, accepting the same forms as
+/// [`duration_option`].
+pub(crate) mod duration_required {
+    use std::time::Duration;
+
+    use crate::units::{format_duration, parse_duration};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        value: &Duration,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&format_duration(*value))
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Duration, D::Error> {
+        let raw = serde_yaml::Value::deserialize(deserializer)?;
+        match raw {
+            serde_yaml::Value::Number(number) => number
+                .as_u64()
+                .map(Duration::from_millis)
+                .ok_or_else(|| serde::de::Error::custom("duration must be a non-negative integer")),
+            serde_yaml::Value::String(text) => {
+                parse_duration(&text).map_err(serde::de::Error::custom)
+            }
+            other => Err(serde::de::Error::custom(format!(
+                "expected a duration like `1m`, got {other:?}"
             ))),
         }
     }
