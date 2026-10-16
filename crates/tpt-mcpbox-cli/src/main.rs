@@ -60,8 +60,28 @@ enum Command {
         #[arg(short, long, value_name = "PATH")]
         output: Option<PathBuf>,
     },
+    /// Audit log commands.
+    Audit {
+        /// Audit subcommand to run.
+        #[command(subcommand)]
+        command: AuditCommand,
+    },
     /// Print the version and exit.
     Version,
+}
+
+#[derive(Debug, Subcommand)]
+enum AuditCommand {
+    /// Check the hash chain of an audit log and report the first break.
+    Verify {
+        /// Log file to check. Defaults to `audit.path` from the configuration.
+        #[arg(value_name = "PATH")]
+        log: Option<PathBuf>,
+        /// Configuration to read `audit.path` from when PATH is omitted;
+        /// discovered from the working directory when omitted.
+        #[arg(short, long, value_name = "CONFIG")]
+        config: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -74,6 +94,9 @@ fn main() -> ExitCode {
             offline,
         } => validate_command(config.as_deref(), warn_only, offline),
         Command::Schema { output } => schema_command(output.as_deref()),
+        Command::Audit {
+            command: AuditCommand::Verify { log, config },
+        } => audit_verify_command(log.as_deref(), config.as_deref()),
         Command::Version => {
             println!("tpt-mcpbox {VERSION}");
             Ok(ExitCode::SUCCESS)
@@ -187,6 +210,41 @@ fn report_environment(loaded: &load::LoadedConfig, path: &Path) {
     }
 }
 
+/// Verify the audit chain and print its length and head hash.
+///
+/// A broken chain is an error, so the exit code is non-zero and scripts can
+/// depend on it.
+fn audit_verify_command(log: Option<&Path>, config: Option<&Path>) -> Result<ExitCode, String> {
+    let path = match log {
+        Some(path) => path.to_path_buf(),
+        None => {
+            let cwd = std::env::current_dir()
+                .map_err(|error| format!("cannot read the working directory: {error}"))?;
+            let (config_path, _) = load::discover(config, &|name| std::env::var(name).ok(), &cwd)
+                .map_err(|error| error.to_string())?;
+            let loaded = load::load_file(&config_path).map_err(|error| error.to_string())?;
+            // Relative audit paths are relative to the configuration file.
+            let base = config_path.parent().unwrap_or(Path::new("."));
+            base.join(&loaded.config.audit.path)
+        }
+    };
+
+    // An absent file would verify as an empty log, which is not the same thing
+    // as "nothing was tampered with": the log is missing.
+    if !path.exists() {
+        return Err(format!("no audit log at {}", path.display()));
+    }
+
+    let report = tpt_mcpbox_audit::verify(&path).map_err(|error| error.to_string())?;
+    println!(
+        "audit log {}: {} entries verified, head {}",
+        path.display(),
+        report.entries,
+        report.head
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
 fn schema_command(output: Option<&Path>) -> Result<ExitCode, String> {
     let rendered = tpt_mcpbox_config::schema::json_schema_string();
     match output {
@@ -210,5 +268,28 @@ mod tests {
     #[test]
     fn schema_renders_to_stdout_sized_output() {
         assert!(tpt_mcpbox_config::schema::json_schema_string().len() > 100);
+    }
+
+    #[test]
+    fn audit_verify_accepts_an_intact_log_and_rejects_tampering() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let log = tpt_mcpbox_audit::AuditLog::open(&path).unwrap();
+        log.append("tool_call", serde_json::json!({ "tool": "echo" }))
+            .unwrap();
+        drop(log);
+
+        assert!(audit_verify_command(Some(&path), None).is_ok());
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace("echo", "rm")).unwrap();
+        assert!(audit_verify_command(Some(&path), None).is_err());
+    }
+
+    #[test]
+    fn audit_verify_reports_a_missing_log_as_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = audit_verify_command(Some(&dir.path().join("none.jsonl")), None).unwrap_err();
+        assert!(err.contains("no audit log"));
     }
 }
