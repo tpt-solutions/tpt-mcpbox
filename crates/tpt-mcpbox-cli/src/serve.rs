@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tpt_mcpbox_audit::AuditLog;
 use tpt_mcpbox_config::Redactor;
 use tpt_mcpbox_config::model::{Config, UpstreamConfig};
@@ -104,6 +104,8 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
         Limiter::new(tool_limits, Limits::default()),
         Arc::clone(&policy),
     );
+    let startup_audit = audit.clone();
+    record_secret_bindings(startup_audit.as_deref(), config)?;
     if let Some(audit) = audit {
         router = router.with_audit(audit);
     }
@@ -115,9 +117,14 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
                 .load_tool(tool, &secrets, base)
                 .map_err(|error| format!("tool `{}`: {error}", tool.name))?,
         );
-        for descriptor in parse_descriptors(loaded.descriptors())
-            .map_err(|e| format!("tool `{}`: {e}", tool.name))?
-        {
+        let descriptors = parse_descriptors(loaded.descriptors())
+            .map_err(|e| format!("tool `{}`: {e}", tool.name))?;
+        record(
+            startup_audit.as_deref(),
+            "tool_loaded",
+            json!({ "tool": tool.name, "digest": loaded.digest(), "tools": descriptors.len() }),
+        )?;
+        for descriptor in descriptors {
             router
                 .add_wasm(Arc::clone(&loaded), descriptor)
                 .map_err(|error| error.to_string())?;
@@ -156,6 +163,17 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
             Arc::clone(&policy),
         ));
         let prefix = upstream.prefix.as_deref();
+        record(
+            startup_audit.as_deref(),
+            "upstream_connected",
+            json!({
+                "upstream": upstream.name,
+                "transport": if upstream.transport.stdio.is_some() { "stdio" } else { "http" },
+                "tools": tools.len(),
+                "resources": resources.len(),
+                "prompts": prompts.len(),
+            }),
+        )?;
         router
             .add_upstream(prefix, Arc::clone(&gate), tools)
             .map_err(|error| format!("upstream `{}`: {error}", upstream.name))?;
@@ -215,6 +233,42 @@ pub(crate) async fn serve_stdio(hub: Hub) -> Result<(), String> {
     let drain = hub.router.shutdown(DRAIN_TIMEOUT).await;
     tracing::info!(?drain, "shut down");
     served.map_err(|error| format!("stdio transport failed: {error}"))
+}
+
+/// Writes one startup record. Startup stops if the record cannot be written:
+/// the same rule that refuses a call whose start record fails.
+fn record(log: Option<&AuditLog>, kind: &str, data: Value) -> Result<(), String> {
+    match log {
+        Some(log) => log
+            .append(kind, data)
+            .map(|_| ())
+            .map_err(|error| format!("audit log: {error}")),
+        None => Ok(()),
+    }
+}
+
+/// Records which secret names are bound to which tool or upstream. Only names
+/// are written, never values.
+fn record_secret_bindings(log: Option<&AuditLog>, config: &Config) -> Result<(), String> {
+    for tool in config.tools.iter().filter(|t| t.enabled) {
+        for binding in &tool.secrets {
+            record(
+                log,
+                "secret_bound",
+                json!({ "name": binding.env, "scope": "tool", "owner": tool.name }),
+            )?;
+        }
+    }
+    for upstream in config.upstreams.iter().filter(|u| u.enabled) {
+        for binding in &upstream.secrets {
+            record(
+                log,
+                "secret_bound",
+                json!({ "name": binding.env, "scope": "upstream", "owner": upstream.name }),
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Resolves on Ctrl-C, or on SIGTERM where the platform has it.
