@@ -12,6 +12,7 @@
 #![warn(missing_docs, missing_debug_implementations)]
 
 pub mod dispatch;
+pub mod features;
 pub mod lifecycle;
 pub mod limiter;
 pub mod mcp;

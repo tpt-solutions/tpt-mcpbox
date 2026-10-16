@@ -15,12 +15,15 @@
 //! the only place that sees them.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::{Map, Value, json};
 use tpt_mcpbox_audit::{AuditError, AuditLog};
 use tpt_mcpbox_policy::{Policy, PolicyInput};
+use tpt_mcpbox_protocol::prompts::Prompt;
+use tpt_mcpbox_protocol::resources::Resource;
 use tpt_mcpbox_protocol::tools::{CallToolResult, Tool};
 use tpt_mcpbox_proxy::{PolicyGate, ProxyError, UpstreamError};
 use tpt_mcpbox_runtime::{CancelToken, LoadedTool, ToolError};
@@ -67,6 +70,12 @@ pub enum RouterError {
     /// call does not run unrecorded.
     #[error(transparent)]
     Audit(#[from] AuditError),
+    /// No upstream serves this resource URI.
+    #[error("unknown resource `{0}`")]
+    UnknownResource(String),
+    /// No upstream provides this prompt.
+    #[error("unknown prompt `{0}`")]
+    UnknownPrompt(String),
 }
 
 impl RouterError {
@@ -85,6 +94,8 @@ impl RouterError {
             Self::Encode(_) => "invalid_arguments",
             Self::TaskJoin(_) => "internal_error",
             Self::Audit(_) => "audit_error",
+            Self::UnknownResource(_) => "unknown_resource",
+            Self::UnknownPrompt(_) => "unknown_prompt",
         }
     }
 }
@@ -113,7 +124,7 @@ pub enum ToolOutput {
     Wasm(String),
 }
 
-enum Backend {
+pub(crate) enum Backend {
     Wasm {
         tool: Arc<LoadedTool>,
         tool_name: String,
@@ -124,7 +135,7 @@ enum Backend {
     },
 }
 
-struct Route {
+pub(crate) struct Route {
     backend: Backend,
     descriptor: Tool,
 }
@@ -132,11 +143,26 @@ struct Route {
 /// Merged catalog of Wasm and upstream tools, with the controls applied to
 /// each call.
 pub struct Router {
-    routes: BTreeMap<String, Route>,
-    limiter: Limiter,
-    lifecycle: Lifecycle,
-    policy: Arc<Policy>,
-    audit: Option<Arc<AuditLog>>,
+    pub(crate) routes: BTreeMap<String, Route>,
+    pub(crate) limiter: Limiter,
+    pub(crate) lifecycle: Lifecycle,
+    pub(crate) policy: Arc<Policy>,
+    pub(crate) audit: Option<Arc<AuditLog>>,
+    /// Resource URI → the upstream that serves it.
+    pub(crate) resources: BTreeMap<String, Arc<PolicyGate>>,
+    /// Resource descriptors, as listed to the agent.
+    pub(crate) resource_list: BTreeMap<String, Resource>,
+    /// Exposed prompt name → the upstream and its own name for the prompt.
+    pub(crate) prompts: BTreeMap<String, PromptRoute>,
+    /// Prompt descriptors under their exposed names.
+    pub(crate) prompt_list: BTreeMap<String, Prompt>,
+}
+
+/// Where a prompt lives: the upstream gate and the prompt's name there.
+#[derive(Debug)]
+pub(crate) struct PromptRoute {
+    pub(crate) gate: Arc<PolicyGate>,
+    pub(crate) upstream_name: String,
 }
 
 impl std::fmt::Debug for Router {
@@ -157,6 +183,10 @@ impl Router {
             lifecycle: Lifecycle::new(),
             policy,
             audit: None,
+            resources: BTreeMap::new(),
+            resource_list: BTreeMap::new(),
+            prompts: BTreeMap::new(),
+            prompt_list: BTreeMap::new(),
         }
     }
 
@@ -192,10 +222,10 @@ impl Router {
     pub fn add_upstream(
         &mut self,
         prefix: Option<&str>,
-        gate: PolicyGate,
+        gate: impl Into<Arc<PolicyGate>>,
         tools: Vec<Tool>,
     ) -> Result<(), RouterError> {
-        let gate = Arc::new(gate);
+        let gate: Arc<PolicyGate> = gate.into();
         let prefix = prefix.unwrap_or("");
         let names: Vec<String> = tools
             .iter()
@@ -265,30 +295,65 @@ impl Router {
         arguments: Option<Map<String, Value>>,
         cancel: CancelToken,
     ) -> Result<ToolOutput, RouterError> {
-        let started = Instant::now();
         let mut keys: Vec<&str> = arguments
             .as_ref()
             .map_or_else(Vec::new, |a| a.keys().map(String::as_str).collect());
         keys.sort_unstable();
-        self.record(
+        let mut extra = Map::new();
+        extra.insert("arg_keys".to_owned(), json!(keys));
+
+        self.audited(
             "tool_call",
-            json!({ "phase": "start", "caller": caller, "tool": name, "arg_keys": keys }),
+            "tool",
+            name,
+            caller,
+            extra,
+            self.dispatch(caller, name, arguments, cancel),
         )
-        .await?;
+        .await
+    }
 
-        let result = self.dispatch(caller, name, arguments, cancel).await;
+    /// Runs `work` between a `start` and a `finish` audit record.
+    ///
+    /// `subject_key` names the subject in the records (`tool`, `resource` or
+    /// `prompt`). `extra` adds fields to the `start` record only; it must not
+    /// carry secret values.
+    pub(crate) async fn audited<T>(
+        &self,
+        kind: &'static str,
+        subject_key: &'static str,
+        subject: &str,
+        caller: &str,
+        extra: Map<String, Value>,
+        work: impl Future<Output = Result<T, RouterError>>,
+    ) -> Result<T, RouterError> {
+        let started = Instant::now();
 
-        let mut finish = json!({
-            "phase": "finish",
-            "caller": caller,
-            "tool": name,
-            "outcome": result.as_ref().map_or_else(RouterError::outcome, |_| "ok"),
-            "duration_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        });
+        let mut start = Map::new();
+        start.insert("phase".to_owned(), json!("start"));
+        start.insert("caller".to_owned(), json!(caller));
+        start.insert(subject_key.to_owned(), json!(subject));
+        start.extend(extra);
+        self.record(kind, Value::Object(start)).await?;
+
+        let result = work.await;
+
+        let mut finish = Map::new();
+        finish.insert("phase".to_owned(), json!("finish"));
+        finish.insert("caller".to_owned(), json!(caller));
+        finish.insert(subject_key.to_owned(), json!(subject));
+        finish.insert(
+            "outcome".to_owned(),
+            json!(result.as_ref().map_or_else(RouterError::outcome, |_| "ok")),
+        );
+        finish.insert(
+            "duration_ms".to_owned(),
+            json!(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
+        );
         if let Err(RouterError::Denied { rule_id, .. }) = &result {
-            finish["rule_id"] = json!(rule_id);
+            finish.insert("rule_id".to_owned(), json!(rule_id));
         }
-        if let Err(err) = self.record("tool_call", finish).await {
+        if let Err(err) = self.record(kind, Value::Object(finish)).await {
             tracing::error!("audit finish record failed: {err}");
         }
         result
@@ -790,7 +855,7 @@ mod mcp_tests {
     #[tokio::test]
     async fn unsupported_method_is_method_not_found() {
         let handler = handler_with(vec![allow("echo")]);
-        let response = ask(&handler, &session(), "resources/list", None).await;
+        let response = ask(&handler, &session(), "resources/subscribe", None).await;
         assert_eq!(response["error"]["code"], -32601);
     }
 }

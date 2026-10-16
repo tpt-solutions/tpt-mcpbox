@@ -19,10 +19,15 @@
 
 use std::sync::Arc;
 
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tpt_mcpbox_config::Redactor;
-use tpt_mcpbox_protocol::jsonrpc::{Error as RpcError, Id, Request, Response, ServerMessage};
+use tpt_mcpbox_protocol::jsonrpc::{
+    Error as RpcError, ErrorCode, Id, Request, Response, ServerMessage,
+};
 use tpt_mcpbox_protocol::method;
+use tpt_mcpbox_protocol::prompts::{GetPromptRequest, ListPromptsResult};
+use tpt_mcpbox_protocol::resources::{ListResourcesResult, ReadResourceRequest};
 use tpt_mcpbox_protocol::server::{Handler, HandlerFuture};
 use tpt_mcpbox_protocol::session::Session;
 use tpt_mcpbox_protocol::tools::{CallToolRequest, CallToolResult, ListToolsResult};
@@ -59,7 +64,77 @@ impl ToolHandler {
         match request.method.as_str() {
             method::tools::LIST => self.list(id),
             method::tools::CALL => self.call(session, id, request.params).await,
+            method::resources::LIST => self.resources_list(id),
+            method::resources::READ => self.resource_read(session, id, request.params).await,
+            method::prompts::LIST => self.prompts_list(id),
+            method::prompts::GET => self.prompt_get(session, id, request.params).await,
             other => self.failure(id, RpcError::method_not_found(other)),
+        }
+    }
+
+    fn resources_list(&self, id: Id) -> ServerMessage {
+        let result = ListResourcesResult {
+            resources: self.router.list_resources(),
+            next_cursor: None,
+        };
+        self.success(id, &result)
+    }
+
+    async fn resource_read(
+        &self,
+        session: &Session,
+        id: Id,
+        params: Option<Value>,
+    ) -> ServerMessage {
+        let Some(request) = parse::<ReadResourceRequest>(params) else {
+            return self.failure(
+                id,
+                RpcError::invalid_params("resources/read requires a uri"),
+            );
+        };
+        match self
+            .router
+            .read_resource(session.id().as_str(), &request.uri)
+            .await
+        {
+            Ok(result) => self.success(id, &result),
+            Err(RouterError::UnknownResource(uri)) => self.failure(
+                id,
+                RpcError::invalid_params(format!("unknown resource `{uri}`")),
+            ),
+            Err(err) => self.failure(
+                id,
+                RpcError::new(ErrorCode::INTERNAL_ERROR, err.to_string()),
+            ),
+        }
+    }
+
+    fn prompts_list(&self, id: Id) -> ServerMessage {
+        let result = ListPromptsResult {
+            prompts: self.router.list_prompts(),
+            next_cursor: None,
+        };
+        self.success(id, &result)
+    }
+
+    async fn prompt_get(&self, session: &Session, id: Id, params: Option<Value>) -> ServerMessage {
+        let Some(request) = parse::<GetPromptRequest>(params) else {
+            return self.failure(id, RpcError::invalid_params("prompts/get requires a name"));
+        };
+        match self
+            .router
+            .get_prompt(session.id().as_str(), &request.name, request.arguments)
+            .await
+        {
+            Ok(result) => self.success(id, &result),
+            Err(RouterError::UnknownPrompt(name)) => self.failure(
+                id,
+                RpcError::invalid_params(format!("unknown prompt `{name}`")),
+            ),
+            Err(err) => self.failure(
+                id,
+                RpcError::new(ErrorCode::INTERNAL_ERROR, err.to_string()),
+            ),
         }
     }
 
@@ -144,6 +219,11 @@ impl ToolHandler {
             _ => {}
         }
     }
+}
+
+/// Deserialises request params, or `None` when they are absent or malformed.
+fn parse<T: DeserializeOwned>(params: Option<Value>) -> Option<T> {
+    serde_json::from_value(params?).ok()
 }
 
 impl Handler for ToolHandler {
