@@ -9,9 +9,12 @@
 
 use serde_json::{Map, Value};
 use tpt_mcpbox_protocol::model::InitializeResult;
+use tpt_mcpbox_protocol::prompts::{GetPromptResult, Prompt};
+use tpt_mcpbox_protocol::resources::{ReadResourceResult, Resource};
 use tpt_mcpbox_protocol::tools::{CallToolResult, Tool};
 
 use crate::http::HttpClient;
+use crate::ops;
 use crate::upstream::{Client, UpstreamError};
 
 /// A connected upstream, stdio or Streamable HTTP.
@@ -74,6 +77,58 @@ impl Connection {
         match self {
             Self::Stdio(client) => client.call_tool(name, arguments).await,
             Self::Http(client) => client.call_tool(name, arguments).await,
+        }
+    }
+
+    /// Lists every resource, across all pages.
+    ///
+    /// # Errors
+    ///
+    /// See [`crate::ops::list_resources`].
+    pub async fn list_resources(&self) -> Result<Vec<Resource>, UpstreamError> {
+        match self {
+            Self::Stdio(client) => ops::list_resources(client).await,
+            Self::Http(client) => ops::list_resources(client).await,
+        }
+    }
+
+    /// Reads one resource. Policy is not checked here; see [`crate::PolicyGate`].
+    ///
+    /// # Errors
+    ///
+    /// See [`crate::ops::read_resource`].
+    pub async fn read_resource(&self, uri: &str) -> Result<ReadResourceResult, UpstreamError> {
+        match self {
+            Self::Stdio(client) => ops::read_resource(client, uri).await,
+            Self::Http(client) => ops::read_resource(client, uri).await,
+        }
+    }
+
+    /// Lists every prompt, across all pages.
+    ///
+    /// # Errors
+    ///
+    /// See [`crate::ops::list_prompts`].
+    pub async fn list_prompts(&self) -> Result<Vec<Prompt>, UpstreamError> {
+        match self {
+            Self::Stdio(client) => ops::list_prompts(client).await,
+            Self::Http(client) => ops::list_prompts(client).await,
+        }
+    }
+
+    /// Renders one prompt. Policy is not checked here; see [`crate::PolicyGate`].
+    ///
+    /// # Errors
+    ///
+    /// See [`crate::ops::get_prompt`].
+    pub async fn get_prompt(
+        &self,
+        name: &str,
+        arguments: Option<Map<String, Value>>,
+    ) -> Result<GetPromptResult, UpstreamError> {
+        match self {
+            Self::Stdio(client) => ops::get_prompt(client, name, arguments).await,
+            Self::Http(client) => ops::get_prompt(client, name, arguments).await,
         }
     }
 }
