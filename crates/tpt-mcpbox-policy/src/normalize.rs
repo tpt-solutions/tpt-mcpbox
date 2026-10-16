@@ -15,7 +15,7 @@
 /// refused rather than guessed at, so `example.com:443@evil.test` can never be
 /// read as `example.com`.
 #[must_use]
-pub(crate) fn normalize_host(raw: &str) -> Option<String> {
+pub fn normalize_host(raw: &str) -> Option<String> {
     // Only ASCII is trimmed: a Unicode space or look-alike must not be quietly
     // stripped into a name that then matches an allow rule.
     let host = raw
@@ -48,7 +48,7 @@ pub(crate) fn normalize_host(raw: &str) -> Option<String> {
 /// This does not touch the filesystem, so symlinks are not resolved here. The
 /// runtime's preopen mapping is the layer that must enforce symlink containment.
 #[must_use]
-pub(crate) fn normalize_path(raw: &str) -> Option<String> {
+pub fn normalize_path(raw: &str) -> Option<String> {
     if raw.is_empty() || raw.contains('\0') {
         return None;
     }
@@ -84,7 +84,7 @@ pub(crate) fn normalize_path(raw: &str) -> Option<String> {
 /// refused: percent-encoding (which could hide `..`), a query, a fragment, a
 /// backslash in the authority, and a `..` that climbs out of the path.
 #[must_use]
-pub(crate) fn normalize_uri(raw: &str) -> Option<String> {
+pub fn normalize_uri(raw: &str) -> Option<String> {
     if raw.contains(['%', '?', '#']) {
         return None;
     }

@@ -18,11 +18,25 @@ workspace = true
 tpt-mcpbox-config = { workspace = true }
 tpt-mcpbox-policy = { workspace = true }
 tpt-mcpbox-protocol = { workspace = true }
+globset = { workspace = true }
+http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+hyper = "1"
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+wasmtime = { workspace = true }
+wasmtime-wasi = { workspace = true }
+wasmtime-wasi-http = { workspace = true }
+wasmtime-wasi-io = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 tempfile = { workspace = true }
+
+[[bench]]
+name = "invocation"
+harness = false

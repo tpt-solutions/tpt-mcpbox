@@ -14,7 +14,7 @@
 mod decision;
 mod dsl;
 mod error;
-mod normalize;
+pub mod normalize;
 mod policy;
 mod rego;
 

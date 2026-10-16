@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) TPT Solutions
+
+/// The world every tpt-mcpbox tool component implements.
+///
+/// Tools import whatever WASI interfaces they need (`wasi:http`, `wasi:filesystem`,
+/// clocks, random). The host links only the interfaces a tool's capabilities
+/// grant, so an import that is not granted fails at instantiation or at first use.
+package tpt:mcpbox@0.1.0;
+
+world tool {
+    /// JSON array describing the tools this component provides:
+    /// `[{"name": "...", "description": "...", "input_schema": {...}}]`.
+    export describe: func() -> string;
+
+    /// Run one tool. `arguments` is the JSON object from `tools/call`. The
+    /// result is the JSON text returned to the agent, or an error message.
+    export call: func(name: string, arguments: string) -> result<string, string>;
+}

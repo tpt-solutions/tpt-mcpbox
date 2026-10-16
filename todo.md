@@ -111,19 +111,25 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 
 ## Phase 4 — Wasm Runtime (`tpt-mcpbox-runtime`)
 
-- [ ] `wasmtime` engine config: component model on, epoch interruption, pooling allocator, fuel optional
-- [ ] Define WIT world for tools (exports: tool descriptors + `call`; imports: `wasi:http`, `wasi:filesystem`, `wasi:cli` subset, clocks, random)
-- [ ] Module source loaders: local path; OCI pull (`oci-client`/`oci-distribution`) with local content-addressed cache
-- [ ] Integrity: SHA-256 pin per tool; optional signature verification (e.g. `sigstore`/`minisign`); refuse on mismatch
-- [ ] Warm instance pool: pre-instantiate per tool, checkout/checkin, max idle, recycle after N calls or on fault
-- [ ] Per-call `Store` with `ResourceLimiter`: memory cap from config, table/instance caps
-- [ ] Execution timeout via epoch deadline; cooperative cancellation on `notifications/cancelled`
-- [ ] WASI capability mapper: build preopen dirs from policy `filesystem` globs (read-only vs read-write), virtualized so host paths never leak
-- [ ] `wasi:http` outbound host handler: parse request, enforce policy host allowlist, inject configured secret headers, enforce TLS, cap request/response size + time, strip hop-by-hop headers
-- [ ] Deny all other ambient authority (no env, no unlisted sockets, deterministic-ish clocks/random policy)
-- [ ] Panic/trap isolation: convert to structured MCP tool error, never crash the proxy
-- [ ] Startup self-test: load a fixture component, assert sandbox denies fs/net not granted
-- [ ] Criterion benchmark: measure per-invocation overhead; assert < 5 ms p50 on reference hardware; track in CI
+> **Status:** built and tested against a real guest component (`tests/guest`,
+> built for `wasm32-wasip2` by the test harness). 22 integration tests and 24
+> unit tests pass. Open items are marked below and in the summary.
+
+- [x] `wasmtime` engine config: component model on, epoch interruption (10 ms tick), pooling allocator (256 instance slots, 256 MiB max per memory). Fuel: not used.
+- [x] Define WIT world for tools (`wit/tool.wit`, `tpt:mcpbox/tool`: exports `describe` and `call`). Imports are the WASI interfaces the host links (`wasi:cli`, filesystem, clocks, random, `wasi:http`), each granted only as far as the tool's capabilities allow.
+- [ ] Module source loaders: local path ✓; OCI pull (`oci-client`/`oci-distribution`) with local content-addressed cache — **open**: a tool with `oci_ref` is refused with `ToolError::Unsupported`.
+- [x] Integrity: SHA-256 pin per tool, refused on mismatch before compilation (bytes are read once and the same buffer is compiled). Unpinned modules load with a warning that prints the digest.
+- [ ] Optional signature verification (`sigstore`/`minisign`) — **open**.
+- [x] Warm instance pool: pre-instantiated at load, checkout/checkin, cap = `limits.max_concurrent_calls` (default 4), recycled after 256 calls or on any fault.
+- [~] Per-call `Store` with `ResourceLimiter`: deviation — stores are per pooled instance and reused across calls until recycled, with per-call deadline and cancellation reset on each call. Memory, instance, table and memory-count caps are applied via `StoreLimits`. Guest memory can persist between calls within one recycle window; set `recycle_after` lower for stricter isolation (currently fixed at 256, not yet configurable).
+- [x] Execution timeout via epoch deadline (`capabilities.time_limit`, default 10 s, interrupted within one tick); cooperative cancellation via `CancelToken` (wiring to `notifications/cancelled` is Phase 5).
+- [x] WASI capability mapper: filesystem grants become preopened directories named relative to the grant (no host paths); env exposes only granted, set variables; no stdio, args, raw sockets, or name lookup. **Caveat:** a grant preopens its fixed directory, so `workspace/*.md` exposes all of `workspace/` to the guest. Recorded as a residual risk.
+- [~] `wasi:http` outbound handler: host allowlist (normalised, case-insensitive globs), HTTPS only, default port only, userinfo tricks refused, hop-by-hop and `Connection`-named headers stripped, secret headers injected (overwriting any guest value, marked sensitive), connect/first-byte/between-bytes timeouts clamped to the tool's time limit, declared `Content-Length` capped at 16 MiB. **Open:** response body size is not capped (the outbound future does not expose the body stream), and DNS-rebinding / private-address (SSRF) checks are not done, so an allowlisted name that resolves to a private address is not blocked.
+- [x] Deny all other ambient authority (no env beyond grants, no unlisted sockets, no inherited stdio).
+- [x] Panic/trap isolation: traps, OOM, timeouts, cancellation and host panics become structured `ToolError`s; the instance is discarded, the runtime keeps serving.
+- [x] Startup self-test: `Runtime::self_test(probe_wasm, probe_path)` loads a probe with no grants and asserts the file read, outbound request and environment are all refused. Wiring into `tpt-mcpbox run` is Phase 10.
+- [x] Criterion benchmark: `benches/invocation.rs` measures a warm echo call. CI regression threshold (< 5 ms p50) is **not yet enforced** — see the Phase 9 benchmark item.
+
 
 ## Phase 5 — Router & Rate Limiter (`tpt-mcpbox-router`)
 

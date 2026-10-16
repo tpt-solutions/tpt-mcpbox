@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) TPT Solutions
+
+# Test fixture: a tool component built for `wasm32-wasip2` by the runtime's
+# integration tests. It is its own workspace so it never joins the host build.
+[package]
+name = "tpt-mcpbox-test-guest"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.61"
+waki = "0.5.1"
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
