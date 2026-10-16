@@ -8,9 +8,11 @@
 //! response among other messages. The `Mcp-Session-Id` the server issues is
 //! echoed on every later request.
 //!
-//! Only `http://` endpoints are accepted for now. TLS needs a client connector
-//! that is not in the dependency set yet, so `https://` is refused with
-//! [`UpstreamError::Unsupported`] instead of being sent in the clear.
+//! `https://` is the normal scheme. Trust roots are the Mozilla bundle from
+//! `webpki-roots`, so results do not depend on the host's certificate store.
+//! Plain `http://` is accepted only for loopback addresses, where no traffic
+//! leaves the machine. Any other plain-HTTP URL is refused with
+//! [`UpstreamError::Unsupported`], so tokens are never sent in the clear.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -21,6 +23,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::header::{ACCEPT, CONTENT_TYPE, HeaderName, HeaderValue};
 use hyper::{Method, Uri};
+use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::{Client as HyperClient, connect::HttpConnector};
 use hyper_util::rt::TokioExecutor;
 use serde_json::Value;
@@ -33,7 +36,7 @@ use crate::upstream::{UpstreamError, UpstreamOptions};
 const SESSION_HEADER: &str = "mcp-session-id";
 const PROTOCOL_HEADER: &str = "mcp-protocol-version";
 
-type Http = HyperClient<HttpConnector, Full<Bytes>>;
+type Http = HyperClient<HttpsConnector<HttpConnector>, Full<Bytes>>;
 
 /// MCP client for a Streamable HTTP endpoint.
 #[derive(Debug)]
@@ -60,17 +63,18 @@ impl HttpClient {
         let endpoint: Uri = url
             .parse()
             .map_err(|e| UpstreamError::Unsupported(format!("invalid URL `{url}`: {e}")))?;
+        let loopback = endpoint.host().is_some_and(is_loopback_host);
         match endpoint.scheme_str() {
-            Some("http") => {}
-            Some("https") => {
-                return Err(UpstreamError::Unsupported(
-                    "https upstreams need TLS support, which this build does not include yet"
-                        .to_owned(),
-                ));
+            Some("https") => {}
+            Some("http") if loopback => {}
+            Some("http") => {
+                return Err(UpstreamError::Unsupported(format!(
+                    "plain http is only allowed for loopback addresses; use https:// for `{url}`"
+                )));
             }
             _ => {
                 return Err(UpstreamError::Unsupported(format!(
-                    "URL `{url}` must use http://"
+                    "URL `{url}` must use https:// (or http:// for a loopback address)"
                 )));
             }
         }
@@ -86,11 +90,17 @@ impl HttpClient {
             })
             .collect::<Result<Vec<_>, UpstreamError>>()?;
 
+        let connector = HttpsConnectorBuilder::new()
+            .with_webpki_roots()
+            .https_or_http()
+            .enable_http1()
+            .build();
+
         Ok(Self {
             endpoint,
             headers,
             session: Mutex::new(None),
-            http: HyperClient::builder(TokioExecutor::new()).build_http(),
+            http: HyperClient::builder(TokioExecutor::new()).build(connector),
             next_id: AtomicI64::new(1),
             options,
         })
@@ -288,6 +298,15 @@ fn parse_event(data: &str) -> Option<Response> {
     serde_json::from_value(value).ok()
 }
 
+/// `true` for `localhost` and loopback IP literals (bracketed IPv6 allowed).
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -422,14 +441,40 @@ mod tests {
     }
 
     #[test]
-    fn https_is_refused_until_tls_exists() {
+    fn https_endpoint_is_accepted() {
+        assert!(
+            HttpClient::new(
+                "https://example.com/mcp",
+                &BTreeMap::new(),
+                UpstreamOptions::default(),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn remote_plain_http_is_refused() {
         let err = HttpClient::new(
-            "https://example.com/mcp",
+            "http://example.com/mcp",
             &BTreeMap::new(),
             UpstreamOptions::default(),
         )
         .unwrap_err();
-        assert!(matches!(err, UpstreamError::Unsupported(msg) if msg.contains("TLS")));
+        assert!(matches!(err, UpstreamError::Unsupported(msg) if msg.contains("loopback")));
+    }
+
+    #[test]
+    fn loopback_plain_http_is_accepted() {
+        for url in [
+            "http://127.0.0.1:8080/mcp",
+            "http://localhost:8080/mcp",
+            "http://[::1]:8080/mcp",
+        ] {
+            assert!(
+                HttpClient::new(url, &BTreeMap::new(), UpstreamOptions::default()).is_ok(),
+                "{url} should be accepted"
+            );
+        }
     }
 
     #[test]
@@ -454,6 +499,24 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, UpstreamError::Unsupported(_)));
+    }
+
+    /// Network test: needs outbound HTTPS. Run with `cargo test -- --ignored`.
+    /// Any HTTP-level answer proves the TLS handshake and trust roots work; the
+    /// host is not an MCP server, so the call itself is expected to fail.
+    #[tokio::test]
+    #[ignore = "requires outbound network access"]
+    async fn tls_handshake_with_public_host() {
+        let client = client("https://example.com/", UpstreamOptions::default());
+        match client.initialize().await {
+            Err(UpstreamError::Transport(message)) => {
+                assert!(
+                    message.starts_with("HTTP "),
+                    "unexpected transport error: {message}"
+                );
+            }
+            other => panic!("expected an HTTP-level answer, got {other:?}"),
+        }
     }
 
     #[test]
