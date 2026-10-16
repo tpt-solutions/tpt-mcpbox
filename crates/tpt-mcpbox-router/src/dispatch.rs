@@ -16,8 +16,10 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Instant;
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
+use tpt_mcpbox_audit::{AuditError, AuditLog};
 use tpt_mcpbox_policy::{Policy, PolicyInput};
 use tpt_mcpbox_protocol::tools::{CallToolResult, Tool};
 use tpt_mcpbox_proxy::{PolicyGate, ProxyError, UpstreamError};
@@ -61,6 +63,30 @@ pub enum RouterError {
     /// The blocking task running a Wasm tool panicked or was cancelled.
     #[error("tool task did not complete: {0}")]
     TaskJoin(String),
+    /// The audit record could not be written. Raised before dispatch, so the
+    /// call does not run unrecorded.
+    #[error(transparent)]
+    Audit(#[from] AuditError),
+}
+
+impl RouterError {
+    /// Short, stable label for the audit log.
+    #[must_use]
+    pub fn outcome(&self) -> &'static str {
+        match self {
+            Self::UnknownTool(_) => "unknown_tool",
+            Self::Conflict(_) => "conflict",
+            Self::ShuttingDown(_) => "shutting_down",
+            Self::Limited(Rejection::ToolRate(_) | Rejection::ClientRate(_)) => "rate_limited",
+            Self::Limited(_) => "concurrency_limited",
+            Self::Denied { .. } => "denied",
+            Self::Upstream(_) => "upstream_error",
+            Self::Tool(_) => "tool_error",
+            Self::Encode(_) => "invalid_arguments",
+            Self::TaskJoin(_) => "internal_error",
+            Self::Audit(_) => "audit_error",
+        }
+    }
 }
 
 fn rule_suffix(rule_id: &Option<String>) -> String {
@@ -110,6 +136,7 @@ pub struct Router {
     limiter: Limiter,
     lifecycle: Lifecycle,
     policy: Arc<Policy>,
+    audit: Option<Arc<AuditLog>>,
 }
 
 impl std::fmt::Debug for Router {
@@ -129,7 +156,17 @@ impl Router {
             limiter,
             lifecycle: Lifecycle::new(),
             policy,
+            audit: None,
         }
+    }
+
+    /// Records every call to `audit`: a `start` entry before dispatch and a
+    /// `finish` entry with the outcome. Argument values are never recorded,
+    /// only their key names.
+    #[must_use]
+    pub fn with_audit(mut self, audit: Arc<AuditLog>) -> Self {
+        self.audit = Some(audit);
+        self
     }
 
     /// Registers a Wasm tool under the name in its descriptor.
@@ -212,11 +249,63 @@ impl Router {
         self.lifecycle.shutdown(timeout).await
     }
 
-    /// Dispatches one `tools/call`.
+    /// Dispatches one `tools/call`, recording it when auditing is enabled.
     ///
     /// `caller` identifies the session for limits and policy. `name` is the
     /// exposed name from [`Router::list`].
+    ///
+    /// If the `start` record cannot be written the call is refused. If the
+    /// `finish` record cannot be written, the call's result is still returned
+    /// and the failure is logged at error level: the tool has already run, so
+    /// reporting it as failed would invite a retry.
     pub async fn call(
+        &self,
+        caller: &str,
+        name: &str,
+        arguments: Option<Map<String, Value>>,
+        cancel: CancelToken,
+    ) -> Result<ToolOutput, RouterError> {
+        let started = Instant::now();
+        let mut keys: Vec<&str> = arguments
+            .as_ref()
+            .map_or_else(Vec::new, |a| a.keys().map(String::as_str).collect());
+        keys.sort_unstable();
+        self.record(
+            "tool_call",
+            json!({ "phase": "start", "caller": caller, "tool": name, "arg_keys": keys }),
+        )
+        .await?;
+
+        let result = self.dispatch(caller, name, arguments, cancel).await;
+
+        let mut finish = json!({
+            "phase": "finish",
+            "caller": caller,
+            "tool": name,
+            "outcome": result.as_ref().map_or_else(RouterError::outcome, |_| "ok"),
+            "duration_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        });
+        if let Err(RouterError::Denied { rule_id, .. }) = &result {
+            finish["rule_id"] = json!(rule_id);
+        }
+        if let Err(err) = self.record("tool_call", finish).await {
+            tracing::error!("audit finish record failed: {err}");
+        }
+        result
+    }
+
+    async fn record(&self, kind: &'static str, data: Value) -> Result<(), RouterError> {
+        let Some(log) = self.audit.clone() else {
+            return Ok(());
+        };
+        // fsync blocks, so the write runs off the async worker threads.
+        tokio::task::spawn_blocking(move || log.append(kind, data))
+            .await
+            .map_err(|e| RouterError::TaskJoin(e.to_string()))??;
+        Ok(())
+    }
+
+    async fn dispatch(
         &self,
         caller: &str,
         name: &str,
@@ -278,7 +367,7 @@ mod tests {
     use super::*;
     use crate::limiter::Limits;
 
-    fn tool(name: &str) -> Tool {
+    pub(super) fn tool(name: &str) -> Tool {
         Tool {
             name: name.to_owned(),
             title: None,
@@ -289,7 +378,7 @@ mod tests {
         }
     }
 
-    fn allow(tool_name: &str) -> Rule {
+    pub(super) fn allow(tool_name: &str) -> Rule {
         Rule {
             id: format!("allow-{tool_name}"),
             description: None,
@@ -305,7 +394,7 @@ mod tests {
         }
     }
 
-    fn policy(rules: Vec<Rule>) -> Arc<Policy> {
+    pub(super) fn policy(rules: Vec<Rule>) -> Arc<Policy> {
         let config = PolicyConfig {
             rules,
             ..PolicyConfig::default()
@@ -314,7 +403,7 @@ mod tests {
     }
 
     /// Fake upstream that answers every `tools/call` with a text result.
-    fn gate(policy: Arc<Policy>) -> PolicyGate {
+    pub(super) fn gate(policy: Arc<Policy>) -> PolicyGate {
         let (client_side, server_side) = duplex(64 * 1024);
         let (read, write) = tokio::io::split(client_side);
         let client = Client::connect(
@@ -474,5 +563,115 @@ mod tests {
             router.call("agent", "t", None, CancelToken::new()).await,
             Err(RouterError::ShuttingDown(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use std::sync::Arc;
+
+    use serde_json::{Value, json};
+    use tempfile::tempdir;
+    use tpt_mcpbox_audit::AuditLog;
+    use tpt_mcpbox_runtime::CancelToken;
+
+    use super::tests::{allow, gate, policy, tool};
+    use super::*;
+    use crate::limiter::Limits;
+
+    fn audited_router(
+        path: &std::path::Path,
+        rules: Vec<tpt_mcpbox_config::model::Rule>,
+    ) -> Router {
+        let policy = policy(rules);
+        let log = Arc::new(AuditLog::open(path).unwrap());
+        let mut router =
+            Router::new(Limiter::new([], Limits::default()), Arc::clone(&policy)).with_audit(log);
+        router
+            .add_upstream(None, gate(policy), vec![tool("echo")])
+            .unwrap();
+        router
+    }
+
+    fn entries(path: &std::path::Path) -> Vec<Value> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap()["data"].clone())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn successful_call_writes_start_and_finish() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let router = audited_router(&path, vec![allow("echo")]);
+
+        router
+            .call("agent-1", "echo", None, CancelToken::new())
+            .await
+            .unwrap();
+
+        let records = entries(&path);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["phase"], "start");
+        assert_eq!(records[0]["caller"], "agent-1");
+        assert_eq!(records[1]["phase"], "finish");
+        assert_eq!(records[1]["outcome"], "ok");
+    }
+
+    #[tokio::test]
+    async fn denied_call_records_outcome_and_rule() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let mut rule = allow("echo");
+        rule.effect = tpt_mcpbox_config::model::Effect::Deny;
+        let router = audited_router(&path, vec![rule]);
+
+        assert!(
+            router
+                .call("agent-1", "echo", None, CancelToken::new())
+                .await
+                .is_err()
+        );
+
+        let records = entries(&path);
+        assert_eq!(records[1]["outcome"], "denied");
+        assert_eq!(records[1]["rule_id"], "allow-echo");
+    }
+
+    #[tokio::test]
+    async fn unknown_tool_is_recorded_without_dispatch() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let router = audited_router(&path, vec![allow("echo")]);
+
+        assert!(
+            router
+                .call("agent-1", "nope", None, CancelToken::new())
+                .await
+                .is_err()
+        );
+
+        let records = entries(&path);
+        assert_eq!(records[1]["outcome"], "unknown_tool");
+    }
+
+    #[tokio::test]
+    async fn argument_values_are_never_recorded() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let router = audited_router(&path, vec![allow("echo")]);
+
+        let mut args = Map::new();
+        args.insert("api_token".to_owned(), json!("sk-live-SECRET-VALUE"));
+        router
+            .call("agent-1", "echo", Some(args), CancelToken::new())
+            .await
+            .unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("sk-live-SECRET-VALUE"));
+        assert_eq!(entries(&path)[0]["arg_keys"], json!(["api_token"]));
     }
 }
