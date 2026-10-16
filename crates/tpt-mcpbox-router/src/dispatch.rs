@@ -675,3 +675,122 @@ mod audit_tests {
         assert_eq!(entries(&path)[0]["arg_keys"], json!(["api_token"]));
     }
 }
+
+#[cfg(test)]
+mod mcp_tests {
+    use serde_json::{Value, json};
+    use tpt_mcpbox_config::model::Effect;
+    use tpt_mcpbox_protocol::Implementation;
+    use tpt_mcpbox_protocol::jsonrpc::{Id, Request, ServerMessage};
+    use tpt_mcpbox_protocol::model::ServerCapabilities;
+    use tpt_mcpbox_protocol::server::Handler;
+    use tpt_mcpbox_protocol::session::{Session, SessionConfig};
+
+    use super::tests::{allow, gate, policy, tool};
+    use super::*;
+    use crate::limiter::Limits;
+    use crate::mcp::ToolHandler;
+
+    fn session() -> Arc<Session> {
+        Arc::new(Session::new(SessionConfig::new(
+            Implementation::new("test", "0"),
+            ServerCapabilities::default(),
+        )))
+    }
+
+    /// Sends one request through the handler and returns the JSON response.
+    async fn ask(
+        handler: &ToolHandler,
+        session: &Arc<Session>,
+        method: &str,
+        params: Option<Value>,
+    ) -> Value {
+        let mut request = Request::new(Id::Number(1), method);
+        if let Some(params) = params {
+            request = request.with_params(params);
+        }
+        let Ok(Some(ServerMessage::Response(response))) = handler.handle(session, request).await
+        else {
+            panic!("expected a response to {method}");
+        };
+        serde_json::to_value(response).unwrap()
+    }
+
+    fn handler_with(rules: Vec<tpt_mcpbox_config::model::Rule>) -> ToolHandler {
+        let policy = policy(rules);
+        let mut router = Router::new(Limiter::new([], Limits::default()), Arc::clone(&policy));
+        router
+            .add_upstream(Some("gh__"), gate(policy), vec![tool("echo")])
+            .unwrap();
+        ToolHandler::new(Arc::new(router))
+    }
+
+    #[tokio::test]
+    async fn tools_list_shows_namespaced_names() {
+        let handler = handler_with(vec![allow("echo")]);
+        let response = ask(&handler, &session(), "tools/list", None).await;
+        assert_eq!(response["result"]["tools"][0]["name"], "gh__echo");
+    }
+
+    #[tokio::test]
+    async fn allowed_call_returns_upstream_result() {
+        let handler = handler_with(vec![allow("echo")]);
+        let response = ask(
+            &handler,
+            &session(),
+            "tools/call",
+            Some(json!({ "name": "gh__echo", "arguments": {} })),
+        )
+        .await;
+        assert_eq!(response["result"]["content"][0]["text"], "echo");
+        assert!(response["error"].is_null());
+    }
+
+    #[tokio::test]
+    async fn denied_call_is_a_tool_error_the_agent_can_read() {
+        let mut rule = allow("echo");
+        rule.effect = Effect::Deny;
+        let handler = handler_with(vec![rule]);
+        let response = ask(
+            &handler,
+            &session(),
+            "tools/call",
+            Some(json!({ "name": "gh__echo" })),
+        )
+        .await;
+        assert_eq!(response["result"]["isError"], true);
+        assert!(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("denied")
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_tool_is_a_protocol_error() {
+        let handler = handler_with(vec![allow("echo")]);
+        let response = ask(
+            &handler,
+            &session(),
+            "tools/call",
+            Some(json!({ "name": "nope" })),
+        )
+        .await;
+        assert_eq!(response["error"]["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn call_without_params_is_a_protocol_error() {
+        let handler = handler_with(vec![allow("echo")]);
+        let response = ask(&handler, &session(), "tools/call", None).await;
+        assert_eq!(response["error"]["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn unsupported_method_is_method_not_found() {
+        let handler = handler_with(vec![allow("echo")]);
+        let response = ask(&handler, &session(), "resources/list", None).await;
+        assert_eq!(response["error"]["code"], -32601);
+    }
+}

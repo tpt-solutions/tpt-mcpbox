@@ -14,6 +14,7 @@
 pub mod dispatch;
 pub mod lifecycle;
 pub mod limiter;
+pub mod mcp;
 
 pub use dispatch::{Router, RouterError, ToolOutput};
 pub use lifecycle::{Drain, InFlight, Lifecycle, ShuttingDown};
