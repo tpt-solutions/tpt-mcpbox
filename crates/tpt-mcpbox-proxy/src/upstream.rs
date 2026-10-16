@@ -26,6 +26,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::codec::{FramedRead, LinesCodec};
+use tpt_mcpbox_config::Redactor;
 use tpt_mcpbox_config::model::StdioUpstream;
 use tpt_mcpbox_protocol::jsonrpc::{Error as RpcError, Id, Notification, Request, Response};
 
@@ -154,6 +155,7 @@ impl Client {
     pub fn spawn(
         upstream: &StdioUpstream,
         options: UpstreamOptions,
+        redactor: Arc<Redactor>,
     ) -> Result<Self, UpstreamError> {
         let mut command = Command::new(&upstream.command);
         command
@@ -176,13 +178,7 @@ impl Client {
         let stdin = child.stdin.take().ok_or(UpstreamError::Closed)?;
         let stdout = child.stdout.take().ok_or(UpstreamError::Closed)?;
         if let Some(stderr) = child.stderr.take() {
-            let command = upstream.command.clone();
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    tracing::debug!(upstream = %command, "{line}");
-                }
-            });
+            tokio::spawn(forward_stderr(upstream.command.clone(), stderr, redactor));
         }
 
         let mut client = Self::connect(stdout, stdin, options);
@@ -278,6 +274,20 @@ impl RpcChannel for Client {
 
     async fn notify(&self, method: &str, params: Option<Value>) -> Result<(), UpstreamError> {
         Client::notify(self, method, params).await
+    }
+}
+
+/// Logs an upstream's stderr at debug level, with known secret values removed.
+///
+/// A child can echo a credential it was given (in an error message or a debug
+/// dump), so nothing is logged until it has been scrubbed.
+async fn forward_stderr<R>(command: String, stderr: R, redactor: Arc<Redactor>)
+where
+    R: AsyncRead + Unpin,
+{
+    let mut lines = BufReader::new(stderr).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        tracing::debug!(upstream = %command, "{}", redactor.scrub(&line));
     }
 }
 
@@ -615,11 +625,71 @@ mod tests {
             .build()
             .unwrap();
         let _guard = rt.enter();
-        match Client::spawn(&upstream, UpstreamOptions::default()) {
+        let redactor = Arc::new(Redactor::new());
+        match Client::spawn(&upstream, UpstreamOptions::default(), redactor) {
             Err(UpstreamError::Spawn { command, .. }) => {
                 assert_eq!(command, "definitely-not-a-real-binary-tpt-mcpbox");
             }
             other => panic!("expected Spawn error, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use std::sync::Mutex as StdMutex;
+
+    use tracing_subscriber::fmt::MakeWriter;
+
+    use super::*;
+
+    /// Collects everything the subscriber writes, so a test can inspect it.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<StdMutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for Captured {
+        type Writer = Captured;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn stderr_is_scrubbed_before_logging() {
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(captured.clone())
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .finish();
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        let mut redactor = Redactor::new();
+        redactor.add("sk-live-123456789");
+        let stderr: &[u8] = b"starting\nauth failed for token sk-live-123456789\n";
+
+        forward_stderr("fake".to_owned(), stderr, Arc::new(redactor)).await;
+
+        let output = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            output.contains("auth failed for token [redacted]"),
+            "{output}"
+        );
+        assert!(
+            !output.contains("sk-live-123456789"),
+            "secret leaked: {output}"
+        );
     }
 }

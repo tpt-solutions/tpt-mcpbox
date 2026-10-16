@@ -84,7 +84,7 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 - [x] Config discovery (`--config`, `$MCPBOX_CONFIG`, CWD, XDG/`%APPDATA%`), layering (`tpt-mcpbox.local.yaml` overlay adds tools/upstreams only), defaults
 - [x] Secrets (`secrets::SecretStore`): load from process env + gitignored `.env`; `secret → header` mapping (e.g. `GITHUB_TOKEN` → `Authorization: Bearer …`)
 - [x] `SecretString` wrapper: zeroize on drop, `Debug`/`Display` redaction, never serialized
-- [ ] Central redaction filter applied to logs, error messages, audit entries (`secrets::Redactor` implemented; wire into `tracing` and audit in Phase 9)
+- [~] Central redaction filter applied to logs, error messages, audit entries (`secrets::Redactor` implemented; **done for upstream stderr** in the proxy, 1 test). **Open:** global `tracing` layer, upstream error messages, audit entries (Phase 9).
 - [ ] Hot reload: watch config, atomic swap, `SIGHUP` (Unix) / equivalent; reload-safe pool draining (`reload::watch_config` polling watcher + validate-before-swap `ReloadHandle` done; `SIGHUP` and pool draining outstanding, latter needs Phase 4)
 - [x] `tpt-mcpbox validate` command (plus `tpt-mcpbox schema`)
 
