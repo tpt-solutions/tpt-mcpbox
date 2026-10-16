@@ -133,19 +133,19 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 
 ## Phase 5 — Router & Rate Limiter (`tpt-mcpbox-router`)
 
-- [ ] Dispatch `tools/call` to Wasm runtime or an upstream proxy target by tool origin
-- [ ] Namespaced aggregation: merge `tools`/`resources`/`prompts` from Wasm + all upstreams; prefix/rename on conflict; `list_changed` fan-in
-- [ ] Per-tool rate limit + max concurrency; per-client (session) rate limit + concurrency; queue vs reject policy
+- [~] Dispatch `tools/call` to Wasm runtime or an upstream proxy target by tool origin — **done for tools:** `dispatch::Router::call` routes to Wasm (run on a blocking thread, policy-checked there) or to a `PolicyGate`, after the shutdown gate and limiter (7 tests). **Open:** resources and prompts; wiring `notifications/cancelled` into the `CancelToken`.
+- [~] Namespaced aggregation: merge `tools`/`resources`/`prompts` from Wasm + all upstreams; prefix/rename on conflict; `list_changed` fan-in — **done for tools:** `<prefix><name>` for upstreams, all-or-nothing refusal on conflict (no silent rename). **Open:** resources, prompts, `list_changed` fan-in.
+- [~] Per-tool rate limit + max concurrency; per-client (session) rate limit + concurrency; queue vs reject policy — **done:** `limiter::Limiter` (token bucket + semaphore per tool and per client, all-or-nothing admission, 9 tests). Reject-only; queue-and-wait **open**. Client gates are never evicted (grows with distinct session ids) — **open**.
 - [ ] Global request timeout, backpressure, structured overload errors
-- [ ] Graceful shutdown: stop accepting, drain in-flight, checkpoint audit log
+- [~] Graceful shutdown: stop accepting, drain in-flight, checkpoint audit log — **done:** `lifecycle::Lifecycle` (`begin` gates new calls, `shutdown(timeout)` drains with `Drain::{Completed, TimedOut}`, 5 tests). Audit checkpoint **open** (Phase 9).
 - [ ] Cancellation + progress propagation across router boundary
 
 ## Phase 6 — Passthrough Proxy (`tpt-mcpbox-proxy`)
 
-- [ ] MCP client for upstreams: stdio (spawn + supervise child process) and Streamable HTTP
-- [ ] Upstream lifecycle: launch, `initialize` handshake, health check, restart with backoff
+- [~] MCP client for upstreams: stdio (spawn + supervise child process) and Streamable HTTP — **done:** stdio client `upstream::Client` (spawn with cleared env, kill-on-drop, id-correlated requests, timeouts; 10 tests). Streamable HTTP client `http::HttpClient` (JSON and SSE replies, `Mcp-Session-Id` echo, configured headers; 7 tests against an axum fake). Both share `ops::{initialize, list_tools, call_tool}` via `RpcChannel`. **Open:** `https://` (needs a TLS connector, not in the dependency set), supervision/restart, resources/prompts/completion methods, server-initiated requests over HTTP GET stream.
+- [~] Upstream lifecycle: launch, `initialize` handshake, health check, restart with backoff — **done:** launch and handshake (version check). **Open:** health check, restart with backoff.
 - [ ] Capability reconciliation between agent, proxy, and each upstream
-- [ ] Enforce policy on every proxied call: inspect `tools/call` args, `resources/read` URIs, `prompts/get` args
+- [~] Enforce policy on every proxied call: inspect `tools/call` args, `resources/read` URIs, `prompts/get` args — **done for `tools/call`:** `gate::PolicyGate` denies before anything is sent (3 tests). **Open:** `resources/read` URIs, `prompts/get` args.
 - [ ] Tool/resource/prompt filtering: allowlist/denylist, rename, description overrides
 - [ ] Full-parity forwarding: resources (list/read/templates/subscribe/updated), prompts (list/get), `completion/complete`
 - [ ] Forward client features to upstream where needed (`roots`, `sampling`) with policy gate

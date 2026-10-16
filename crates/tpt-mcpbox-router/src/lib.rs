@@ -11,5 +11,13 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, missing_debug_implementations)]
 
+pub mod dispatch;
+pub mod lifecycle;
+pub mod limiter;
+
+pub use dispatch::{Router, RouterError, ToolOutput};
+pub use lifecycle::{Drain, InFlight, Lifecycle, ShuttingDown};
+pub use limiter::{Limiter, Limits, Permit, Rejection};
+
 /// Crate version, surfaced by `mcpbox --version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
