@@ -243,7 +243,7 @@ fn run_command(config_path: Option<&Path>) -> Result<ExitCode, String> {
         .map_err(|error| format!("cannot start the async runtime: {error}"))?;
     runtime.block_on(async {
         let hub = serve::build_router(&loaded.config, base).await?;
-        serve::serve_stdio(hub).await
+        serve::serve(hub, loaded.config.server.clone()).await
     })?;
     Ok(ExitCode::SUCCESS)
 }

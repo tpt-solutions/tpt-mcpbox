@@ -19,6 +19,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+axum = { workspace = true }
 clap = { workspace = true }
 globset = { workspace = true }
 tpt-mcpbox-audit = { workspace = true }

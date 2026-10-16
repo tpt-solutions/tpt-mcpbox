@@ -8,6 +8,7 @@
 //! compile before any tool or upstream is loaded. A failure at any step stops
 //! the hub before it accepts a call.
 
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tpt_mcpbox_audit::AuditLog;
 use tpt_mcpbox_config::Redactor;
-use tpt_mcpbox_config::model::{Config, UpstreamConfig};
+use tpt_mcpbox_config::model::{Config, HttpServerConfig, ServerConfig, UpstreamConfig};
 use tpt_mcpbox_config::secrets::SecretStore;
 use tpt_mcpbox_config::validate::{self, Severity, ValidationMode};
 use tpt_mcpbox_policy::Policy;
@@ -28,6 +29,7 @@ use tpt_mcpbox_protocol::model::{
 use tpt_mcpbox_protocol::server::Handler;
 use tpt_mcpbox_protocol::session::SessionConfig;
 use tpt_mcpbox_protocol::tools::Tool;
+use tpt_mcpbox_protocol::transport::http::{HttpOptions, OriginPolicy, StreamableHttpServer};
 use tpt_mcpbox_protocol::transport::stdio::{self, StdioOptions};
 use tpt_mcpbox_proxy::{Client, Connection, HttpClient, PolicyGate, UpstreamOptions};
 use tpt_mcpbox_router::mcp::ToolHandler;
@@ -47,14 +49,11 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// Returns a message naming the first thing that prevented startup.
 pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, String> {
-    if !config.server.has_stdio() {
+    if !config.server.has_stdio() && !config.server.has_http() {
         return Err(
-            "no supported server transport is enabled; add `stdio` under server.transports"
+            "no server transport is enabled; add `stdio` or `http` under server.transports"
                 .to_owned(),
         );
-    }
-    if config.server.has_http() {
-        tracing::warn!("the HTTP server transport is not implemented yet; serving stdio only");
     }
 
     let report = validate::validate(config, ValidationMode::Serve);
@@ -198,13 +197,63 @@ pub(crate) struct Hub {
     pub(crate) redactor: Arc<Redactor>,
 }
 
-/// Serves the hub on stdin/stdout until the agent disconnects or the process is
-/// asked to stop, then drains in-flight calls.
+/// Serves the hub on every enabled transport, then drains in-flight calls.
+///
+/// The stdio transport ends when stdin closes. An HTTP listener, if enabled,
+/// keeps serving after that until a stop signal arrives. Both transports stop
+/// on a stop signal.
 ///
 /// # Errors
 ///
-/// Returns a message if the stdio transport fails.
-pub(crate) async fn serve_stdio(hub: Hub) -> Result<(), String> {
+/// Returns a message if a transport fails.
+pub(crate) async fn serve(hub: Hub, server: ServerConfig) -> Result<(), String> {
+    let handler: Arc<dyn Handler> = Arc::new(
+        ToolHandler::new(Arc::clone(&hub.router)).with_redactor(Arc::clone(&hub.redactor)),
+    );
+
+    // Bind before starting anything, so a bad address stops startup.
+    let http_task = match server.http.as_ref().filter(|_| server.has_http()) {
+        Some(http) => {
+            let listener = bind_http(http).await?;
+            let origin_policy = origin_policy(http);
+            let handler = Arc::clone(&handler);
+            Some(tokio::spawn(async move {
+                serve_http(listener, handler, session_config(), origin_policy).await
+            }))
+        }
+        None => None,
+    };
+
+    let stdio_result = if server.has_stdio() {
+        tokio::select! {
+            result = stdio::serve(Arc::clone(&handler), session_config(), StdioOptions::default()) => {
+                result.map_err(|error| format!("stdio transport failed: {error}"))
+            }
+            () = shutdown_signal() => {
+                tracing::info!("stop requested; no longer reading requests");
+                Ok(())
+            }
+        }
+    } else {
+        shutdown_signal().await;
+        Ok(())
+    };
+
+    let http_result = match http_task {
+        Some(task) => match task.await {
+            Ok(result) => result,
+            Err(error) => Err(format!("http transport task failed: {error}")),
+        },
+        None => Ok(()),
+    };
+
+    let drain = hub.router.shutdown(DRAIN_TIMEOUT).await;
+    tracing::info!(?drain, "shut down");
+    stdio_result.and(http_result)
+}
+
+/// The identity and capabilities the hub reports in `initialize`.
+fn session_config() -> SessionConfig {
     let capabilities = ServerCapabilities {
         tools: Some(ToolsCapability {
             list_changed: Some(false),
@@ -218,21 +267,56 @@ pub(crate) async fn serve_stdio(hub: Hub) -> Result<(), String> {
         }),
         ..ServerCapabilities::default()
     };
-    let session = SessionConfig::new(Implementation::new("tpt-mcpbox", VERSION), capabilities);
-    let handler: Arc<dyn Handler> = Arc::new(
-        ToolHandler::new(Arc::clone(&hub.router)).with_redactor(Arc::clone(&hub.redactor)),
-    );
+    SessionConfig::new(Implementation::new("tpt-mcpbox", VERSION), capabilities)
+}
 
-    let served = tokio::select! {
-        result = stdio::serve(handler, session, StdioOptions::default()) => result,
-        () = shutdown_signal() => {
-            tracing::info!("stop requested; no longer reading requests");
-            Ok(())
-        }
+/// Binds the HTTP listener. Only loopback addresses are accepted: the transport
+/// has no authentication yet, so a network-reachable listener would hand the
+/// hub to anyone who can reach the port.
+async fn bind_http(http: &HttpServerConfig) -> Result<tokio::net::TcpListener, String> {
+    let addr: SocketAddr = http
+        .bind
+        .parse()
+        .map_err(|error| format!("http bind `{}`: {error}", http.bind))?;
+    if !addr.ip().is_loopback() {
+        return Err(format!(
+            "http bind `{}` is not a loopback address; remote access needs authentication, which is not implemented yet",
+            http.bind
+        ));
+    }
+    tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|error| format!("http bind `{addr}`: {error}"))
+}
+
+/// Origins accepted by the HTTP listener: loopback by default, or the explicit
+/// list from the configuration.
+fn origin_policy(http: &HttpServerConfig) -> OriginPolicy {
+    if http.allowed_origins.is_empty() {
+        OriginPolicy::LoopbackOnly
+    } else {
+        OriginPolicy::AllowList(http.allowed_origins.clone())
+    }
+}
+
+async fn serve_http(
+    listener: tokio::net::TcpListener,
+    handler: Arc<dyn Handler>,
+    session: SessionConfig,
+    origin_policy: OriginPolicy,
+) -> Result<(), String> {
+    let options = HttpOptions {
+        origin_policy,
+        ..HttpOptions::default()
     };
-    let drain = hub.router.shutdown(DRAIN_TIMEOUT).await;
-    tracing::info!(?drain, "shut down");
-    served.map_err(|error| format!("stdio transport failed: {error}"))
+    let server = StreamableHttpServer::with_options(handler, session, options);
+    if let Ok(addr) = listener.local_addr() {
+        tracing::info!(%addr, "serving MCP over Streamable HTTP");
+    }
+    axum::serve(listener, server.router())
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .map_err(|error| format!("http transport failed: {error}"))
 }
 
 /// Writes one startup record. Startup stops if the record cannot be written:

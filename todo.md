@@ -179,7 +179,7 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 
 ## Phase 10 — CLI & Developer Experience (`tpt-mcpbox-cli`)
 
-- [~] `tpt-mcpbox run` (start proxy; `--config`, `--transport`, `--dry-run`) — **done:** `run --config` builds the hub (validation, secrets, policy, audit, Wasm tools, stdio and HTTP upstreams with allow/deny globs) and serves stdio; verified end to end with the test guest and a denied call. Ctrl-C and SIGTERM stop the stdio loop and drain in-flight calls (compiled; not exercised interactively). **Open:** `--transport` and `--dry-run` flags, HTTP server transport (warns and is ignored), resources and prompts.
+- [~] `tpt-mcpbox run` (start proxy; `--config`, `--transport`, `--dry-run`) — **done:** `run --config` builds the hub (validation, secrets, policy, audit, Wasm tools, stdio and HTTP upstreams with allow/deny globs) and serves stdio; verified end to end with the test guest and a denied call. Ctrl-C and SIGTERM stop the stdio loop and drain in-flight calls (compiled; not exercised interactively). Stdio and Streamable HTTP (`server.http.bind`) both serve; HTTP binds only to loopback and accepts loopback origins by default, or `allowed_origins`. Verified with curl: initialize, a redacted tool call, and a 403 for a disallowed origin. A second writer on the same audit log is refused by a lock file (`<log>.lock`). **Open:** `--transport` and `--dry-run` flags, authentication for non-loopback HTTP, and stale-lock detection (a killed process leaves its lock file, which must be deleted by hand).
 - [ ] `tpt-mcpbox validate`, `tpt-mcpbox schema` (emit config JSON Schema)
 - [ ] `tpt-mcpbox policy test <input.json>` (explain a decision)
 - [ ] `tpt-mcpbox tools ls` / `tpt-mcpbox tools call` (local invocation for debugging)
