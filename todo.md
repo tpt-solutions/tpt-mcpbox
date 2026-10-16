@@ -179,7 +179,7 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 
 ## Phase 10 — CLI & Developer Experience (`tpt-mcpbox-cli`)
 
-- [ ] `tpt-mcpbox run` (start proxy; `--config`, `--transport`, `--dry-run`)
+- [~] `tpt-mcpbox run` (start proxy; `--config`, `--transport`, `--dry-run`) — **done:** `run --config` builds the hub (validation, secrets, policy, audit, Wasm tools, stdio and HTTP upstreams with allow/deny globs) and serves stdio; verified end to end with the test guest and a denied call. **Open:** `--transport` and `--dry-run` flags, HTTP server transport (warns and is ignored), signal-driven shutdown (stdin EOF only), resources and prompts.
 - [ ] `tpt-mcpbox validate`, `tpt-mcpbox schema` (emit config JSON Schema)
 - [ ] `tpt-mcpbox policy test <input.json>` (explain a decision)
 - [ ] `tpt-mcpbox tools ls` / `tpt-mcpbox tools call` (local invocation for debugging)

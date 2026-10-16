@@ -16,11 +16,14 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use tpt_mcpbox_config::load;
 use tpt_mcpbox_config::secrets::{self, SecretStore, SourceKind};
 use tpt_mcpbox_config::validate::{self, Severity, ValidationMode};
+
+mod serve;
 
 /// Binary version string, also reported in the `initialize` handshake.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -66,6 +69,13 @@ enum Command {
         #[command(subcommand)]
         command: AuditCommand,
     },
+    /// Serve the configured tools and upstreams on stdio.
+    Run {
+        /// Configuration file; discovered from the working directory when
+        /// omitted.
+        #[arg(short, long, value_name = "PATH")]
+        config: Option<PathBuf>,
+    },
     /// Print the version and exit.
     Version,
 }
@@ -94,6 +104,7 @@ fn main() -> ExitCode {
             offline,
         } => validate_command(config.as_deref(), warn_only, offline),
         Command::Schema { output } => schema_command(output.as_deref()),
+        Command::Run { config } => run_command(config.as_deref()),
         Command::Audit {
             command: AuditCommand::Verify { log, config },
         } => audit_verify_command(log.as_deref(), config.as_deref()),
@@ -208,6 +219,34 @@ fn report_environment(loaded: &load::LoadedConfig, path: &Path) {
     if !store.is_empty() {
         println!("resolved secret(s): {}", store.names().join(", "));
     }
+}
+
+/// Start the hub. Stdout carries the protocol, so logs go to stderr only.
+fn run_command(config_path: Option<&Path>) -> Result<ExitCode, String> {
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .init();
+
+    let cwd = std::env::current_dir()
+        .map_err(|error| format!("cannot read the working directory: {error}"))?;
+    let (path, _) = load::discover(config_path, &|name| std::env::var(name).ok(), &cwd)
+        .map_err(|error| error.to_string())?;
+    let loaded = load::load_file(&path).map_err(|error| error.to_string())?;
+    let base = path.parent().unwrap_or(Path::new("."));
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("cannot start the async runtime: {error}"))?;
+    runtime.block_on(async {
+        let router = serve::build_router(&loaded.config, base).await?;
+        serve::serve_stdio(Arc::new(router)).await
+    })?;
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Verify the audit chain and print its length and head hash.

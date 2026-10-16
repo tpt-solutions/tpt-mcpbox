@@ -97,6 +97,9 @@ impl AuditLog {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, AuditError> {
         let path = path.into();
         let report = verify(&path)?;
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         Ok(Self {
             path,

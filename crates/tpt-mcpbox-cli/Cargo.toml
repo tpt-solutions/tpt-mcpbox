@@ -20,6 +20,7 @@ workspace = true
 
 [dependencies]
 clap = { workspace = true }
+globset = { workspace = true }
 tpt-mcpbox-audit = { workspace = true }
 tpt-mcpbox-config = { workspace = true }
 tpt-mcpbox-policy = { workspace = true }

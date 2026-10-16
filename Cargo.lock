@@ -2289,6 +2289,7 @@ name = "tpt-mcpbox-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "globset",
  "serde",
  "serde_json",
  "tempfile",
