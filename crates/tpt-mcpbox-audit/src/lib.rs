@@ -10,5 +10,9 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, missing_debug_implementations)]
 
+pub mod chain;
+
+pub use chain::{AuditError, AuditLog, Entry, GENESIS, VerifyReport, verify};
+
 /// Crate version, surfaced by `mcpbox --version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
