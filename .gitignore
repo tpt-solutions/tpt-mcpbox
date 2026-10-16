@@ -1,5 +1,7 @@
 # Rust / Cargo
 /target/
+# Alternate target dirs (e.g. fuzz builds use target-fuzz/)
+/target-*/
 **/*.rs.bk
 *.pdb
 

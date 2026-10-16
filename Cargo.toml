@@ -41,6 +41,7 @@ async-trait = "0.1"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "macros", "tokio"] }
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
+globset = "0.4"
 http = "1"
 serde = { version = "1", features = ["derive"] }
 schemars = { version = "1", features = ["derive"] }

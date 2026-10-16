@@ -9,10 +9,11 @@ Local-first, zero-trust MCP proxy + WebAssembly tool runtime (Rust). See [spec.t
 (`tpt-mcpbox-sdk`, `tpt-mcpbox-tool-github`, `tpt-mcpbox-tool-fs`) live outside
 the host workspace and build for `wasm32-wasip2` with `cargo-component`.
 
-**Last updated:** 2026-09-29 — Phase 0 complete, Phase 1 (protocol core)
-implemented with 110 passing tests; Phase 2 (config & secrets) largely
+**Last updated:** 2026-10-15 — Phase 0 complete, Phase 1 (protocol core)
+implemented with 109 passing tests; Phase 2 (config & secrets) largely
 implemented with 73 passing config tests (open: SIGHUP, central redaction
-wiring); Phases 3–12 outstanding.
+wiring); Phase 3 YAML DSL evaluator landed with 25 passing policy tests (Rego,
+constraints and reload wiring open); Phases 4–12 outstanding.
 
 ---
 
@@ -89,15 +90,22 @@ wiring); Phases 3–12 outstanding.
 
 ## Phase 3 — Policy Engine (`tpt-mcpbox-policy`)
 
-- [ ] Policy input schema: caller identity/session, tool name, method, arguments, requested resource URIs, target host, fs path
-- [ ] Decision type: allow / deny / allow-with-constraints + reason + rule id (for audit)
-- [ ] Deny-by-default evaluation; explicit precedence and merge rules for multiple policies
-- [ ] YAML DSL evaluator: match tool + method + arg predicates, host/path glob checks, quotas
+> **Status:** `tpt-mcpbox-policy` has the YAML DSL evaluator (`Engine`), host and
+> path normalisation (fail-closed on traversal and authority tricks), dry-run,
+> and a decision cache keyed on normalised input. Compiling a config with
+> `policy.rego` set is refused until the Rego evaluator exists. Still open:
+> caller identity and URI inputs, allow-with-constraints, DSL quotas, multi-policy
+> precedence, Rego, reload invalidation, `regorus` fixtures and property tests.
+
+- [ ] Policy input schema: caller identity/session, tool name, method, arguments, requested resource URIs, target host, fs path (partial: `PolicyInput` has method, tool, arguments, host, fs path; identity and URIs missing)
+- [ ] Decision type: allow / deny / allow-with-constraints + reason + rule id (for audit) (partial: allow/deny, reason, rule id; constraints missing)
+- [ ] Deny-by-default evaluation; explicit precedence and merge rules for multiple policies (DSL is deny-by-default; multi-policy merge missing)
+- [ ] YAML DSL evaluator: match tool + method + arg predicates, host/path glob checks, quotas (quotas missing)
 - [ ] Rego evaluator via `regorus`: load `.rego` modules, stable input document, decision logging
 - [ ] Engine selection per policy; combine YAML + Rego results conservatively (most restrictive wins)
-- [ ] Decision cache keyed on normalized input; invalidate on config reload
-- [ ] Dry-run / audit-only mode (log what would be denied without blocking)
-- [ ] Tests: allow/deny matrices, glob edge cases, path traversal, Unicode/host-normalization, `regorus` policy fixtures; property tests
+- [ ] Decision cache keyed on normalized input; invalidate on config reload (cache is per-engine, so a rebuilt engine starts empty; reload handle does not rebuild the engine yet)
+- [x] Dry-run / audit-only mode (log what would be denied without blocking) — engine reports `would_be` and reason; writing the audit entry is Phase 9
+- [ ] Tests: allow/deny matrices, glob edge cases, path traversal, Unicode/host-normalization, `regorus` policy fixtures; property tests (25 unit tests done; Unicode, Rego fixtures and property tests missing)
 
 ## Phase 4 — Wasm Runtime (`tpt-mcpbox-runtime`)
 
