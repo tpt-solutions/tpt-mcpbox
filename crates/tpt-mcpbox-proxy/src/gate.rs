@@ -1,0 +1,258 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) TPT Solutions
+
+//! Policy enforcement in front of an upstream client.
+//!
+//! [`PolicyGate`] evaluates every `tools/call` against the compiled policy
+//! before anything is sent upstream. A denied call never reaches the wire. In
+//! dry-run mode the engine's allow/deny is still returned to the caller here,
+//! so the gate follows the same rule as the engine: the call proceeds only when
+//! the decision is `allow`.
+
+use std::sync::Arc;
+
+use serde_json::{Map, Value};
+use tpt_mcpbox_policy::{Decision, Policy, PolicyInput};
+use tpt_mcpbox_protocol::tools::CallToolResult;
+
+use crate::upstream::{Client, UpstreamError};
+
+/// Why a proxied call did not complete.
+#[derive(Debug, thiserror::Error)]
+pub enum ProxyError {
+    /// The policy refused the call. Nothing was sent upstream.
+    #[error("denied by policy{}: {reason}", rule_suffix(.rule_id))]
+    Denied {
+        /// Rule that decided the call, when one did.
+        rule_id: Option<String>,
+        /// Human-readable reason, safe to show to the agent.
+        reason: String,
+    },
+    /// The call was allowed but the upstream failed.
+    #[error(transparent)]
+    Upstream(#[from] UpstreamError),
+}
+
+fn rule_suffix(rule_id: &Option<String>) -> String {
+    rule_id
+        .as_deref()
+        .map_or_else(String::new, |id| format!(" (rule `{id}`)"))
+}
+
+/// An upstream client that consults the policy before every call.
+#[derive(Debug)]
+pub struct PolicyGate {
+    upstream: String,
+    client: Client,
+    policy: Arc<Policy>,
+}
+
+impl PolicyGate {
+    /// Wraps `client`. `upstream` is the configured upstream name, used only
+    /// for diagnostics.
+    #[must_use]
+    pub fn new(upstream: impl Into<String>, client: Client, policy: Arc<Policy>) -> Self {
+        Self {
+            upstream: upstream.into(),
+            client,
+            policy,
+        }
+    }
+
+    /// Name of the upstream this gate fronts.
+    #[must_use]
+    pub fn upstream(&self) -> &str {
+        &self.upstream
+    }
+
+    /// Evaluates the policy for `tools/call` without forwarding anything.
+    ///
+    /// `caller` is the agent or session identity the policy matches on.
+    #[must_use]
+    pub fn check_tool_call(
+        &self,
+        caller: &str,
+        tool: &str,
+        arguments: Option<&Map<String, Value>>,
+    ) -> Decision {
+        let input = PolicyInput {
+            method: "tools/call".to_owned(),
+            caller: Some(caller.to_owned()),
+            tool: Some(tool.to_owned()),
+            arguments: arguments.map_or(Value::Null, |a| Value::Object(a.clone())),
+            ..PolicyInput::default()
+        };
+        self.policy.evaluate(&input)
+    }
+
+    /// Checks the policy and, if it allows the call, forwards it upstream.
+    pub async fn call_tool(
+        &self,
+        caller: &str,
+        tool: &str,
+        arguments: Option<Map<String, Value>>,
+    ) -> Result<CallToolResult, ProxyError> {
+        let decision = self.check_tool_call(caller, tool, arguments.as_ref());
+        if !decision.is_allowed() {
+            tracing::info!(
+                upstream = %self.upstream,
+                tool,
+                caller,
+                rule = ?decision.rule_id,
+                "tool call denied by policy"
+            );
+            return Err(ProxyError::Denied {
+                rule_id: decision.rule_id,
+                reason: decision.reason,
+            });
+        }
+        Ok(self.client.call_tool(tool, arguments).await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn denied_error_names_the_rule() {
+        let err = ProxyError::Denied {
+            rule_id: Some("deny-secrets".to_owned()),
+            reason: "tool not allowed".to_owned(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "denied by policy (rule `deny-secrets`): tool not allowed"
+        );
+    }
+
+    #[test]
+    fn denied_error_without_rule_omits_it() {
+        let err = ProxyError::Denied {
+            rule_id: None,
+            reason: "default deny".to_owned(),
+        };
+        assert_eq!(err.to_string(), "denied by policy: default deny");
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use serde_json::json;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, duplex};
+    use tpt_mcpbox_config::model::{Effect, PolicyConfig, Rule};
+
+    use super::*;
+    use crate::upstream::UpstreamOptions;
+
+    fn rule(id: &str, effect: Effect, tool: &str) -> Rule {
+        Rule {
+            id: id.to_owned(),
+            description: None,
+            effect,
+            tool: Some(tool.to_owned()),
+            method: None,
+            args: BTreeMap::new(),
+            hosts: Vec::new(),
+            paths: Vec::new(),
+            caller: None,
+            uris: Vec::new(),
+            constraints: None,
+        }
+    }
+
+    fn policy(rules: Vec<Rule>) -> Arc<Policy> {
+        let config = PolicyConfig {
+            rules,
+            ..PolicyConfig::default()
+        };
+        Arc::new(Policy::from_config(&config).expect("policy compiles"))
+    }
+
+    /// Returns a client and a counter of `tools/call` requests that reached
+    /// the fake upstream.
+    fn upstream() -> (Client, Arc<AtomicUsize>) {
+        let (client_side, server_side) = duplex(64 * 1024);
+        let (read, write) = tokio::io::split(client_side);
+        let client = Client::connect(
+            read,
+            write,
+            UpstreamOptions {
+                request_timeout: Duration::from_secs(5),
+                ..UpstreamOptions::default()
+            },
+        );
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let (sread, mut swrite) = tokio::io::split(server_side);
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(sread).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let msg: serde_json::Value = serde_json::from_str(&line).unwrap();
+                if msg["method"] == "tools/call" {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let reply = json!({
+                        "jsonrpc": "2.0",
+                        "id": msg["id"],
+                        "result": { "content": [{ "type": "text", "text": "ok" }] }
+                    });
+                    swrite
+                        .write_all(format!("{reply}\n").as_bytes())
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+        (client, calls)
+    }
+
+    #[tokio::test]
+    async fn allowed_call_is_forwarded() {
+        let (client, calls) = upstream();
+        let gate = PolicyGate::new(
+            "fake",
+            client,
+            policy(vec![rule("allow-echo", Effect::Allow, "echo")]),
+        );
+        let result = gate.call_tool("agent", "echo", None).await.unwrap();
+        assert_eq!(result.content.len(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn denied_call_never_reaches_upstream() {
+        let (client, calls) = upstream();
+        let gate = PolicyGate::new(
+            "fake",
+            client,
+            policy(vec![rule("deny-rm", Effect::Deny, "rm")]),
+        );
+        match gate.call_tool("agent", "rm", None).await {
+            Err(ProxyError::Denied { rule_id, .. }) => {
+                assert_eq!(rule_id.as_deref(), Some("deny-rm"));
+            }
+            other => panic!("expected denial, got {other:?}"),
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn default_deny_blocks_unlisted_tool() {
+        let (client, calls) = upstream();
+        let gate = PolicyGate::new(
+            "fake",
+            client,
+            policy(vec![rule("allow-echo", Effect::Allow, "echo")]),
+        );
+        assert!(matches!(
+            gate.call_tool("agent", "other", None).await,
+            Err(ProxyError::Denied { .. })
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+}

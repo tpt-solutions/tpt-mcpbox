@@ -18,11 +18,19 @@ workspace = true
 tpt-mcpbox-config = { workspace = true }
 tpt-mcpbox-policy = { workspace = true }
 tpt-mcpbox-protocol = { workspace = true }
+bytes = "1"
+futures = { workspace = true }
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["process"] }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "io-util"] }

@@ -10,5 +10,14 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, missing_debug_implementations)]
 
+pub mod gate;
+pub mod http;
+pub mod ops;
+pub mod upstream;
+
+pub use gate::{PolicyGate, ProxyError};
+pub use http::HttpClient;
+pub use upstream::{Client, UpstreamError, UpstreamOptions};
+
 /// Crate version, surfaced by `mcpbox --version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
