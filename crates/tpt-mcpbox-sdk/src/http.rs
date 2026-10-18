@@ -56,3 +56,26 @@ fn read_json(url: &str, response: waki::Response) -> Result<Value, ToolError> {
     serde_json::from_slice(&bytes)
         .map_err(|error| ToolError::new(format!("{url} did not return JSON: {error}")))
 }
+
+/// `GET` a URL with extra request headers and parse the body as JSON.
+///
+/// Use this for APIs that require a header such as `User-Agent` or `Accept`.
+/// Credentials should not be set here: the host injects secrets on outbound
+/// requests, so a tool never needs to see one.
+///
+/// # Errors
+///
+/// As [`get_json`].
+pub fn get_json_with_headers(
+    url: &str,
+    headers: &[(&'static str, &'static str)],
+) -> Result<Value, ToolError> {
+    let mut request = waki::Client::new().get(url);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = request
+        .send()
+        .map_err(|error| ToolError::new(format!("GET {url} failed: {error:?}")))?;
+    read_json(url, response)
+}
