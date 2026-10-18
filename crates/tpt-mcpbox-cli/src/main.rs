@@ -69,6 +69,12 @@ enum Command {
         #[command(subcommand)]
         command: AuditCommand,
     },
+    /// Policy commands.
+    Policy {
+        /// Policy subcommand to run.
+        #[command(subcommand)]
+        command: PolicyCommand,
+    },
     /// Serve the configured tools and upstreams on stdio.
     Run {
         /// Configuration file; discovered from the working directory when
@@ -103,6 +109,22 @@ enum InitCommand {
         /// since the SDK is not published yet.
         #[arg(long, value_name = "PATH")]
         sdk_path: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PolicyCommand {
+    /// Evaluate one request against the configured policy and explain the
+    /// decision. Exits 0 when allowed and 1 when denied.
+    Test {
+        /// JSON file holding a policy input: `method`, `tool`, `arguments`,
+        /// and optionally `caller`, `host`, `fs_path` and `uris`.
+        #[arg(value_name = "INPUT")]
+        input: PathBuf,
+        /// Configuration to read the policy from; discovered from the working
+        /// directory when omitted.
+        #[arg(short, long, value_name = "CONFIG")]
+        config: Option<PathBuf>,
     },
 }
 
@@ -143,6 +165,9 @@ fn main() -> ExitCode {
         Command::Audit {
             command: AuditCommand::Verify { log, config },
         } => audit_verify_command(log.as_deref(), config.as_deref()),
+        Command::Policy {
+            command: PolicyCommand::Test { input, config },
+        } => policy_test_command(&input, config.as_deref()),
         Command::Version => {
             println!("tpt-mcpbox {VERSION}");
             Ok(ExitCode::SUCCESS)
@@ -348,6 +373,37 @@ fn audit_verify_command(log: Option<&Path>, config: Option<&Path>) -> Result<Exi
     Ok(ExitCode::SUCCESS)
 }
 
+/// Evaluate one policy input and print the decision as JSON.
+///
+/// Exits 0 when the call would be allowed and 1 when denied, so a script can
+/// gate on the result. Dry-run mode reports `effect: allow` with a
+/// `would_be` of `deny`; that is printed as-is, not rewritten.
+fn policy_test_command(input: &Path, config: Option<&Path>) -> Result<ExitCode, String> {
+    let cwd = std::env::current_dir()
+        .map_err(|error| format!("cannot read the working directory: {error}"))?;
+    let (config_path, _) = load::discover(config, &|name| std::env::var(name).ok(), &cwd)
+        .map_err(|error| error.to_string())?;
+    let loaded = load::load_file(&config_path).map_err(|error| error.to_string())?;
+    let policy = tpt_mcpbox_policy::Policy::from_config(&loaded.config.policy)
+        .map_err(|error| format!("policy: {error}"))?;
+
+    let text = std::fs::read_to_string(input)
+        .map_err(|error| format!("cannot read {}: {error}", input.display()))?;
+    let request: tpt_mcpbox_policy::PolicyInput = serde_json::from_str(&text)
+        .map_err(|error| format!("{} is not a policy input: {error}", input.display()))?;
+
+    let decision = policy.evaluate(&request);
+    let rendered = serde_json::to_string_pretty(&decision)
+        .map_err(|error| format!("cannot render the decision: {error}"))?;
+    println!("{rendered}");
+
+    Ok(if decision.is_allowed() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
 fn schema_command(output: Option<&Path>) -> Result<ExitCode, String> {
     let rendered = tpt_mcpbox_config::schema::json_schema_string();
     match output {
@@ -387,6 +443,55 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         std::fs::write(&path, text.replace("echo", "rm")).unwrap();
         assert!(audit_verify_command(Some(&path), None).is_err());
+    }
+
+    fn policy_fixture(dir: &Path) -> PathBuf {
+        let config = dir.join("tpt-mcpbox.yaml");
+        std::fs::write(
+            &config,
+            r#"version: 1
+server:
+  transports: [stdio]
+policy:
+  default: deny
+  rules:
+    - id: allow-read
+      effect: allow
+      tool: read_file
+"#,
+        )
+        .unwrap();
+        config
+    }
+
+    #[test]
+    fn policy_test_exits_zero_when_allowed_and_one_when_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = policy_fixture(dir.path());
+        let allowed = dir.path().join("allowed.json");
+        std::fs::write(&allowed, r#"{"method":"tools/call","tool":"read_file"}"#).unwrap();
+        let denied = dir.path().join("denied.json");
+        std::fs::write(&denied, r#"{"method":"tools/call","tool":"rm_rf"}"#).unwrap();
+
+        assert_eq!(
+            policy_test_command(&allowed, Some(&config)).unwrap(),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            policy_test_command(&denied, Some(&config)).unwrap(),
+            ExitCode::FAILURE
+        );
+    }
+
+    #[test]
+    fn policy_test_rejects_input_that_is_not_a_policy_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = policy_fixture(dir.path());
+        let bad = dir.path().join("bad.json");
+        std::fs::write(&bad, r#"{"method": 7}"#).unwrap();
+
+        let err = policy_test_command(&bad, Some(&config)).unwrap_err();
+        assert!(err.contains("not a policy input"), "{err}");
     }
 
     #[test]
