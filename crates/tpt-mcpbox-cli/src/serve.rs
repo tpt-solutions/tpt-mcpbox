@@ -13,13 +13,18 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::{Request, State};
+use axum::http::{StatusCode, header};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tpt_mcpbox_audit::AuditLog;
 use tpt_mcpbox_config::Redactor;
+use tpt_mcpbox_config::model::SecretBinding;
 use tpt_mcpbox_config::model::{Config, HttpServerConfig, ServerConfig, UpstreamConfig};
-use tpt_mcpbox_config::secrets::SecretStore;
+use tpt_mcpbox_config::secrets::{SecretStore, SecretString};
 use tpt_mcpbox_config::validate::{self, Severity, ValidationMode};
 use tpt_mcpbox_policy::Policy;
 use tpt_mcpbox_protocol::Implementation;
@@ -64,6 +69,16 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
         ));
     }
 
+    let http_token_binding = config
+        .server
+        .http
+        .as_ref()
+        .and_then(|http| http.bearer_env.clone())
+        .map(|env| SecretBinding {
+            env,
+            header: "Authorization".to_owned(),
+            prefix: Some("Bearer".to_owned()),
+        });
     let bindings: Vec<_> = config
         .tools
         .iter()
@@ -76,10 +91,23 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
                 .filter(|u| u.enabled)
                 .flat_map(|u| u.secrets.clone()),
         )
+        .chain(http_token_binding.clone())
         .collect();
     let secrets = SecretStore::from_dotenv_file(bindings, &base.join(".env"))
         .map_err(|error| error.to_string())?;
     let redactor = Arc::new(Redactor::from_store(&secrets));
+    let http_authorization = match &http_token_binding {
+        Some(binding) => {
+            let token = secrets
+                .get(&binding.env)
+                .ok_or_else(|| format!("secret `{}` is not set", binding.env))?;
+            Some(Arc::new(SecretString::new(format!(
+                "Bearer {}",
+                token.expose()
+            ))))
+        }
+        None => None,
+    };
 
     let policy =
         Arc::new(Policy::from_config(&config.policy).map_err(|error| format!("policy: {error}"))?);
@@ -187,14 +215,17 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
     Ok(Hub {
         router: Arc::new(router),
         redactor,
+        http_authorization,
     })
 }
 
-/// A configured hub: the router that serves calls, and the redactor that keeps
-/// secret values out of every reply.
+/// A configured hub: the router that serves calls, the redactor that keeps
+/// secret values out of every reply, and the `Authorization` value the HTTP
+/// listener requires, when a bearer token is configured.
 pub(crate) struct Hub {
     pub(crate) router: Arc<Router>,
     pub(crate) redactor: Arc<Redactor>,
+    pub(crate) http_authorization: Option<Arc<SecretString>>,
 }
 
 /// Serves the hub on every enabled transport, then drains in-flight calls.
@@ -214,11 +245,19 @@ pub(crate) async fn serve(hub: Hub, server: ServerConfig) -> Result<(), String> 
     // Bind before starting anything, so a bad address stops startup.
     let http_task = match server.http.as_ref().filter(|_| server.has_http()) {
         Some(http) => {
-            let listener = bind_http(http).await?;
+            let listener = bind_http(http, hub.http_authorization.is_some()).await?;
             let origin_policy = origin_policy(http);
+            let authorization = hub.http_authorization.clone();
             let handler = Arc::clone(&handler);
             Some(tokio::spawn(async move {
-                serve_http(listener, handler, session_config(), origin_policy).await
+                serve_http(
+                    listener,
+                    handler,
+                    session_config(),
+                    origin_policy,
+                    authorization,
+                )
+                .await
             }))
         }
         None => None,
@@ -270,17 +309,20 @@ fn session_config() -> SessionConfig {
     SessionConfig::new(Implementation::new("tpt-mcpbox", VERSION), capabilities)
 }
 
-/// Binds the HTTP listener. Only loopback addresses are accepted: the transport
-/// has no authentication yet, so a network-reachable listener would hand the
-/// hub to anyone who can reach the port.
-async fn bind_http(http: &HttpServerConfig) -> Result<tokio::net::TcpListener, String> {
+/// Binds the HTTP listener. A non-loopback address is accepted only with a
+/// bearer token configured, because anyone who can reach the port could
+/// otherwise drive the hub.
+async fn bind_http(
+    http: &HttpServerConfig,
+    authenticated: bool,
+) -> Result<tokio::net::TcpListener, String> {
     let addr: SocketAddr = http
         .bind
         .parse()
         .map_err(|error| format!("http bind `{}`: {error}", http.bind))?;
-    if !addr.ip().is_loopback() {
+    if !addr.ip().is_loopback() && !authenticated {
         return Err(format!(
-            "http bind `{}` is not a loopback address; remote access needs authentication, which is not implemented yet",
+            "http bind `{}` is not a loopback address; set server.http.bearer_env so clients must authenticate",
             http.bind
         ));
     }
@@ -304,16 +346,22 @@ async fn serve_http(
     handler: Arc<dyn Handler>,
     session: SessionConfig,
     origin_policy: OriginPolicy,
+    authorization: Option<Arc<SecretString>>,
 ) -> Result<(), String> {
     let options = HttpOptions {
         origin_policy,
         ..HttpOptions::default()
     };
     let server = StreamableHttpServer::with_options(handler, session, options);
-    if let Ok(addr) = listener.local_addr() {
-        tracing::info!(%addr, "serving MCP over Streamable HTTP");
+    let mut app = server.router();
+    let authenticated = authorization.is_some();
+    if let Some(expected) = authorization {
+        app = app.layer(middleware::from_fn_with_state(expected, require_bearer));
     }
-    axum::serve(listener, server.router())
+    if let Ok(addr) = listener.local_addr() {
+        tracing::info!(%addr, authenticated, "serving MCP over Streamable HTTP");
+    }
+    axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|error| format!("http transport failed: {error}"))
@@ -353,6 +401,35 @@ fn record_secret_bindings(log: Option<&AuditLog>, config: &Config) -> Result<(),
         }
     }
     Ok(())
+}
+
+/// Rejects requests whose `Authorization` header is not the configured bearer
+/// value. The check is constant-time, so the response timing does not reveal
+/// how much of the token matched.
+async fn require_bearer(
+    State(expected): State<Arc<SecretString>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let presented = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    if authorized(&expected, presented) {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Bearer")],
+            "a valid bearer token is required",
+        )
+            .into_response()
+    }
+}
+
+/// `true` when `presented` is exactly the expected `Authorization` value.
+fn authorized(expected: &SecretString, presented: Option<&str>) -> bool {
+    presented.is_some_and(|value| expected.constant_time_eq(value))
 }
 
 /// Resolves on Ctrl-C, or on SIGTERM where the platform has it.
@@ -507,5 +584,27 @@ mod tests {
         };
         assert!(visible.allows("search_code"));
         assert!(!visible.allows("delete_repo"));
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+
+    fn expected() -> SecretString {
+        SecretString::new("Bearer sk-test-token-123")
+    }
+
+    #[test]
+    fn exact_authorization_value_is_accepted() {
+        assert!(authorized(&expected(), Some("Bearer sk-test-token-123")));
+    }
+
+    #[test]
+    fn wrong_or_missing_authorization_is_rejected() {
+        assert!(!authorized(&expected(), Some("Bearer sk-test-token-124")));
+        assert!(!authorized(&expected(), Some("sk-test-token-123")));
+        assert!(!authorized(&expected(), Some("")));
+        assert!(!authorized(&expected(), None));
     }
 }

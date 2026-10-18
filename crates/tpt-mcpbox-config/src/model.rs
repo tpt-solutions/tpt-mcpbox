@@ -77,6 +77,12 @@ pub struct HttpServerConfig {
     /// Extra origins accepted besides the loopback default.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_origins: Vec<String>,
+    /// Name of the secret (environment variable or `.env` key) that holds the
+    /// bearer token clients must send as `Authorization: Bearer <token>`.
+    /// Required for any non-loopback bind. The token itself never goes in the
+    /// configuration file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearer_env: Option<String>,
 }
 
 /// Server transport configuration.
