@@ -16,10 +16,12 @@ pub mod features;
 pub mod lifecycle;
 pub mod limiter;
 pub mod mcp;
+pub mod metrics;
 
 pub use dispatch::{Router, RouterError, ToolOutput};
 pub use lifecycle::{Drain, InFlight, Lifecycle, ShuttingDown};
 pub use limiter::{Limiter, Limits, Permit, Rejection};
+pub use metrics::Metrics;
 
 /// Crate version, surfaced by `mcpbox --version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

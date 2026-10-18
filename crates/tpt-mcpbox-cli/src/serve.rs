@@ -23,7 +23,9 @@ use serde_json::{Value, json};
 use tpt_mcpbox_audit::AuditLog;
 use tpt_mcpbox_config::Redactor;
 use tpt_mcpbox_config::model::SecretBinding;
-use tpt_mcpbox_config::model::{Config, HttpServerConfig, ServerConfig, UpstreamConfig};
+use tpt_mcpbox_config::model::{
+    Config, HttpServerConfig, MetricsConfig, ServerConfig, UpstreamConfig,
+};
 use tpt_mcpbox_config::secrets::{SecretStore, SecretString};
 use tpt_mcpbox_config::validate::{self, Severity, ValidationMode};
 use tpt_mcpbox_policy::Policy;
@@ -38,7 +40,7 @@ use tpt_mcpbox_protocol::transport::http::{HttpOptions, OriginPolicy, Streamable
 use tpt_mcpbox_protocol::transport::stdio::{self, StdioOptions};
 use tpt_mcpbox_proxy::{Client, Connection, HttpClient, PolicyGate, UpstreamOptions};
 use tpt_mcpbox_router::mcp::ToolHandler;
-use tpt_mcpbox_router::{Limiter, Limits, Router};
+use tpt_mcpbox_router::{Limiter, Limits, Metrics, Router};
 use tpt_mcpbox_runtime::Runtime;
 
 use crate::VERSION;
@@ -237,12 +239,24 @@ pub(crate) struct Hub {
 /// # Errors
 ///
 /// Returns a message if a transport fails.
-pub(crate) async fn serve(hub: Hub, server: ServerConfig) -> Result<(), String> {
+pub(crate) async fn serve(
+    hub: Hub,
+    server: ServerConfig,
+    metrics_config: MetricsConfig,
+) -> Result<(), String> {
     let handler: Arc<dyn Handler> = Arc::new(
         ToolHandler::new(Arc::clone(&hub.router)).with_redactor(Arc::clone(&hub.redactor)),
     );
 
     // Bind before starting anything, so a bad address stops startup.
+    let metrics_task = if metrics_config.enabled {
+        let listener = bind_metrics(&metrics_config).await?;
+        let metrics = hub.router.metrics();
+        Some(tokio::spawn(serve_metrics(listener, metrics)))
+    } else {
+        None
+    };
+
     let http_task = match server.http.as_ref().filter(|_| server.has_http()) {
         Some(http) => {
             let listener = bind_http(http, hub.http_authorization.is_some()).await?;
@@ -286,9 +300,61 @@ pub(crate) async fn serve(hub: Hub, server: ServerConfig) -> Result<(), String> 
         None => Ok(()),
     };
 
+    let metrics_result = match metrics_task {
+        Some(task) => match task.await {
+            Ok(result) => result,
+            Err(error) => Err(format!("metrics task failed: {error}")),
+        },
+        None => Ok(()),
+    };
+
     let drain = hub.router.shutdown(DRAIN_TIMEOUT).await;
     tracing::info!(?drain, "shut down");
-    stdio_result.and(http_result)
+    stdio_result.and(http_result).and(metrics_result)
+}
+
+/// Binds the metrics listener. It is loopback-only with no authentication, so
+/// a scraper must run on this machine.
+async fn bind_metrics(metrics: &MetricsConfig) -> Result<tokio::net::TcpListener, String> {
+    let addr: SocketAddr = metrics
+        .bind
+        .parse()
+        .map_err(|error| format!("metrics bind `{}`: {error}", metrics.bind))?;
+    if !addr.ip().is_loopback() {
+        return Err(format!(
+            "metrics bind `{}` is not a loopback address; metrics are not authenticated",
+            metrics.bind
+        ));
+    }
+    tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|error| format!("metrics bind `{addr}`: {error}"))
+}
+
+/// Serves `GET /metrics` in the Prometheus text format until a stop signal.
+async fn serve_metrics(
+    listener: tokio::net::TcpListener,
+    metrics: Arc<Metrics>,
+) -> Result<(), String> {
+    let app = axum::Router::new().route(
+        "/metrics",
+        axum::routing::get(move || {
+            let metrics = Arc::clone(&metrics);
+            async move {
+                (
+                    [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+                    metrics.render(),
+                )
+            }
+        }),
+    );
+    if let Ok(addr) = listener.local_addr() {
+        tracing::info!(%addr, "serving Prometheus metrics");
+    }
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .map_err(|error| format!("metrics transport failed: {error}"))
 }
 
 /// The identity and capabilities the hub reports in `initialize`.

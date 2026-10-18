@@ -19,6 +19,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::metrics::Metrics;
 use serde_json::{Map, Value, json};
 use tpt_mcpbox_audit::{AuditError, AuditLog};
 use tpt_mcpbox_policy::{Policy, PolicyInput};
@@ -156,6 +157,8 @@ pub struct Router {
     pub(crate) prompts: BTreeMap<String, PromptRoute>,
     /// Prompt descriptors under their exposed names.
     pub(crate) prompt_list: BTreeMap<String, Prompt>,
+    /// Counters and latency histograms for every call.
+    pub(crate) metrics: Arc<Metrics>,
 }
 
 /// Where a prompt lives: the upstream gate and the prompt's name there.
@@ -187,7 +190,15 @@ impl Router {
             resource_list: BTreeMap::new(),
             prompts: BTreeMap::new(),
             prompt_list: BTreeMap::new(),
+            metrics: Arc::new(Metrics::new()),
         }
+    }
+
+    /// The metrics this router updates. Share it with the endpoint that renders
+    /// them.
+    #[must_use]
+    pub fn metrics(&self) -> Arc<Metrics> {
+        Arc::clone(&self.metrics)
     }
 
     /// Records every call to `audit`: a `start` entry before dispatch and a
@@ -337,15 +348,15 @@ impl Router {
         self.record(kind, Value::Object(start)).await?;
 
         let result = work.await;
+        let outcome = result.as_ref().map_or_else(RouterError::outcome, |_| "ok");
+        self.metrics
+            .observe(metric_kind(kind), outcome, started.elapsed());
 
         let mut finish = Map::new();
         finish.insert("phase".to_owned(), json!("finish"));
         finish.insert("caller".to_owned(), json!(caller));
         finish.insert(subject_key.to_owned(), json!(subject));
-        finish.insert(
-            "outcome".to_owned(),
-            json!(result.as_ref().map_or_else(RouterError::outcome, |_| "ok")),
-        );
+        finish.insert("outcome".to_owned(), json!(outcome));
         finish.insert(
             "duration_ms".to_owned(),
             json!(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
@@ -857,5 +868,67 @@ mod mcp_tests {
         let handler = handler_with(vec![allow("echo")]);
         let response = ask(&handler, &session(), "resources/subscribe", None).await;
         assert_eq!(response["error"]["code"], -32601);
+    }
+}
+
+/// Metric label for an audit kind. Audit kinds and metric kinds differ only for
+/// tool calls, which are audited as `tool_call` and counted as `tool`.
+fn metric_kind(audit_kind: &'static str) -> &'static str {
+    match audit_kind {
+        "tool_call" => "tool",
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod metrics_tests {
+    use tpt_mcpbox_config::model::Effect;
+    use tpt_mcpbox_runtime::CancelToken;
+
+    use super::tests::{allow, gate, policy, tool};
+    use super::*;
+    use crate::limiter::Limits;
+
+    #[tokio::test]
+    async fn calls_are_counted_by_kind_and_outcome() {
+        let mut denied = allow("rm");
+        denied.effect = Effect::Deny;
+        let policy = policy(vec![allow("echo"), denied]);
+        let mut router = Router::new(Limiter::new([], Limits::default()), Arc::clone(&policy));
+        router
+            .add_upstream(
+                None,
+                gate(Arc::clone(&policy)),
+                vec![tool("echo"), tool("rm")],
+            )
+            .unwrap();
+        let metrics = router.metrics();
+
+        router
+            .call("agent", "echo", None, CancelToken::new())
+            .await
+            .unwrap();
+        assert!(
+            router
+                .call("agent", "rm", None, CancelToken::new())
+                .await
+                .is_err()
+        );
+        assert!(
+            router
+                .call("agent", "nope", None, CancelToken::new())
+                .await
+                .is_err()
+        );
+
+        assert_eq!(metrics.calls("tool", "ok"), 1);
+        assert_eq!(metrics.calls("tool", "denied"), 1);
+        assert_eq!(metrics.calls("tool", "unknown_tool"), 1);
+        let text = metrics.render();
+        assert!(text.contains("tpt_mcpbox_calls_total{kind=\"tool\",outcome=\"ok\"} 1"));
+        assert!(
+            !text.contains("echo"),
+            "tool names must not appear as labels"
+        );
     }
 }
