@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) TPT Solutions
+
+# Example tool component. Build with:
+#   cargo build --release --target wasm32-wasip2
+# from this directory. Its output is target/wasm32-wasip2/release/tpt_mcpbox_hello.wasm.
+
+[package]
+name = "tpt-mcpbox-hello"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace]
+
+[lib]
+name = "tpt_mcpbox_hello"
+crate-type = ["cdylib"]
+
+[dependencies]
+tpt-mcpbox-sdk = { path = "../.." }
+schemars = "1"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+
+[profile.release]
+opt-level = "s"

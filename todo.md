@@ -153,13 +153,13 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 
 ## Phase 7 — Guest Tool SDK (`tpt-mcpbox-sdk`)
 
-- [ ] Guest crate targeting the tool WIT world; re-export needed `wasi` bindings
-- [ ] `#[tool]` macro: register name, description, JSON-Schema params via `schemars`, typed handler
-- [ ] Ergonomic HTTP helper over `wasi:http` (JSON get/post, error mapping)
-- [ ] Structured tool errors + result content builders (text/JSON/resource)
+- [x] Guest crate targeting the tool WIT world; re-export needed `wasi` bindings
+- [~] Tool definition: **done as a `Tool` trait plus `export_tools!` macro_rules** (name, description, schemars schema from the argument type, typed `run`), not a `#[tool]` attribute macro, so no proc-macro crate is needed. Verified: a hello component lists its schema and returns typed results through the hub. **Open:** a `#[tool]` attribute sugar if wanted.
+- [~] Ergonomic HTTP helper over `wasi:http` (JSON get/post, error mapping) **Done:** `http::get_json` and `post_json`, with status and JSON error mapping. The denied-without-grant path is verified; a granted successful call is not yet, since it needs a reachable HTTPS endpoint.
+- [~] Structured tool errors + result content builders — **done:** text and JSON results, `ToolError` with `isError` reporting. **Open:** resource content blocks.
 - [ ] Optional resource/prompt provider traits (full parity)
 - [ ] `cargo component`-based project template + `tpt-mcpbox init tool` generator
-- [ ] SDK doc page + a "hello world" tool walkthrough
+- [~] SDK doc page + a "hello world" tool walkthrough **Done:** `crates/tpt-mcpbox-sdk/README.md` and `examples/hello` (greet, add, fetch). **Open:** `init tool` scaffold.
 
 ## Phase 8 — Example Tools (`tools/`)
 

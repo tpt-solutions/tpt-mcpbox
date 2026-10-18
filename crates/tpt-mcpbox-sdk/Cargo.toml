@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) TPT Solutions
+
+[package]
+name = "tpt-mcpbox-sdk"
+description = "Guest SDK for writing tpt-mcpbox tool components in Rust."
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["TPT Solutions"]
+publish = false
+
+# A guest crate builds for wasm32-wasip2 with its own lockfile, so it is not
+# part of the host workspace (see `workspace.exclude` in the root Cargo.toml).
+[workspace]
+
+[dependencies]
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+waki = { version = "0.5.1", features = ["json"] }
+wit-bindgen = "0.61"
