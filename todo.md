@@ -185,7 +185,7 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 - [ ] `tpt-mcpbox tools ls` / `tpt-mcpbox tools call` (local invocation for debugging)
 - [ ] `tpt-mcpbox pull <oci-ref>` (fetch + verify a tool into cache)
 - [x] `tpt-mcpbox audit verify [PATH] [--config CONFIG]` (defaults to `audit.path` from the configuration; a broken chain or missing file exits non-zero)
-- [ ] `tpt-mcpbox init` (scaffold config) / `tpt-mcpbox init tool` (scaffold SDK project)
+- [x] `tpt-mcpbox init` (scaffold config; refuses to overwrite without `--force`) / `tpt-mcpbox init tool` (scaffold SDK project)
 - [ ] Shell completions + generated man pages
 - [ ] Integration guide: wiring tpt-mcpbox into Claude Code / Claude Desktop `mcpServers`
 

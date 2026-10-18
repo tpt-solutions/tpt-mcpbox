@@ -76,11 +76,17 @@ enum Command {
         #[arg(short, long, value_name = "PATH")]
         config: Option<PathBuf>,
     },
-    /// Scaffold a new project.
+    /// Scaffold a starter configuration, or a new project with `init tool`.
     Init {
-        /// What to scaffold.
+        /// Configuration file to write when no subcommand is given.
+        #[arg(short, long, value_name = "PATH", default_value = "tpt-mcpbox.yaml")]
+        output: PathBuf,
+        /// Overwrite the file if it already exists.
+        #[arg(long)]
+        force: bool,
+        /// What to scaffold; omit to write a starter configuration.
         #[command(subcommand)]
-        command: InitCommand,
+        command: Option<InitCommand>,
     },
     /// Print the version and exit.
     Version,
@@ -126,8 +132,14 @@ fn main() -> ExitCode {
         Command::Schema { output } => schema_command(output.as_deref()),
         Command::Run { config } => run_command(config.as_deref()),
         Command::Init {
-            command: InitCommand::Tool { dir, sdk_path },
+            command: Some(InitCommand::Tool { dir, sdk_path }),
+            ..
         } => init_tool_command(&dir, &sdk_path),
+        Command::Init {
+            output,
+            force,
+            command: None,
+        } => init_config_command(&output, force),
         Command::Audit {
             command: AuditCommand::Verify { log, config },
         } => audit_verify_command(log.as_deref(), config.as_deref()),
@@ -242,6 +254,17 @@ fn report_environment(loaded: &load::LoadedConfig, path: &Path) {
     if !store.is_empty() {
         println!("resolved secret(s): {}", store.names().join(", "));
     }
+}
+
+/// Write a starter configuration and say what to do next.
+fn init_config_command(output: &Path, force: bool) -> Result<ExitCode, String> {
+    let path = init::scaffold_config(output, force)?;
+    println!("created {}", path.display());
+    println!(
+        "check it with: tpt-mcpbox validate --config {}",
+        path.display()
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Scaffold a tool component project and list the files written.
