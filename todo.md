@@ -163,11 +163,11 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 
 ## Phase 8 — Example Tools (`tools/`)
 
-- [ ] `tools/tpt-mcpbox-tool-github`: search repos/code via `api.github.com`; relies on proxy-injected `GITHUB_TOKEN` header; no secret in guest
-- [ ] `tools/tpt-mcpbox-tool-fs`: read within `./workspace/**`, write within `./workspace/output/**`, enforced by preopens
+- [~] `tools/tpt-mcpbox-tool-github`: search repos/code via `api.github.com`; relies on proxy-injected `GITHUB_TOKEN` header; no secret in guest **Done:** `search_repos` (percent-encoded query, compact result). Verified: the host injected the token (GitHub answered `401 Bad credentials` for a bogus one) and the token is absent from logs and audit. A search with a real token is not run here. Denied without a network grant.
+- [~] `tools/tpt-mcpbox-tool-fs`: read within `./workspace/**`, write within `./workspace/output/**`, enforced by preopens **Done:** `read_file`, `list_dir`, `write_file`. Verified: reads and output writes work; `..`, absolute paths and writes outside the output directory are refused. The guest checks are advisory; the host preopens are what enforce.
 - [ ] Build both to `.wasm` in CI; publish as release assets
 - [ ] Use both as end-to-end integration fixtures (policy allow + deny paths)
-- [ ] Sample `tpt-mcpbox.yaml` matching the spec's configuration example
+- [x] Sample `tpt-mcpbox.yaml` matching the spec's configuration example **Done:** `examples/tpt-mcpbox.yaml`, with `time_limit`, a hash-pin note, and a test that it passes serve validation.
 
 ## Phase 9 — Observability (`tpt-mcpbox-audit` + runtime hooks)
 

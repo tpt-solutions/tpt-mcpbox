@@ -368,3 +368,19 @@ mod tests {
         assert!(err.contains("no audit log"));
     }
 }
+
+#[cfg(test)]
+mod sample_config_tests {
+    use std::path::Path;
+
+    #[test]
+    fn the_sample_configuration_passes_serve_validation() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/tpt-mcpbox.yaml");
+        let loaded = tpt_mcpbox_config::load::load_file(&path).expect("sample loads");
+        let report = tpt_mcpbox_config::validate::validate(
+            &loaded.config,
+            tpt_mcpbox_config::validate::ValidationMode::Serve,
+        );
+        assert!(report.is_ok(), "{report}");
+    }
+}

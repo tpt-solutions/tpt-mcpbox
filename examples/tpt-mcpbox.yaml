@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) TPT Solutions
+#
+# Sample configuration: the spec's example, with the limits the validator
+# requires for a network-capable tool.
+#
+# Build the example tools first (paths below are relative to this file):
+#   cd ../tools/tpt-mcpbox-tool-github && cargo build --release --target wasm32-wasip2
+#   cd ../tools/tpt-mcpbox-tool-fs     && cargo build --release --target wasm32-wasip2
+#
+# Set the token before starting the hub, or in ../.env next to the config:
+#   GITHUB_TOKEN=ghp_...   (never put the token in this file)
+#
+# Pin each module with `sha256:` once you have built it; the runtime then
+# refuses a module whose bytes differ. Run `sha256sum <file>.wasm` to get it.
+
+version: 1
+
+server:
+  transports: [stdio]
+
+tools:
+  - name: github_search
+    wasm_path: ../tools/tpt-mcpbox-tool-github/target/wasm32-wasip2/release/tpt_mcpbox_tool_github.wasm
+    capabilities:
+      # The only host the tool may reach.
+      network: ["api.github.com"]
+      memory_limit: "64MB"
+      # Required for any tool with network access.
+      time_limit: "30s"
+    # Injected by the host on outbound requests; the tool never sees it.
+    secrets:
+      - env: GITHUB_TOKEN
+        header: Authorization
+        prefix: Bearer
+
+  - name: local_files
+    wasm_path: ../tools/tpt-mcpbox-tool-fs/target/wasm32-wasip2/release/tpt_mcpbox_tool_fs.wasm
+    capabilities:
+      filesystem:
+        read: ["./workspace/**"]
+        write: ["./workspace/output/**"]
+      memory_limit: "64MB"
+      time_limit: "10s"
+
+policy:
+  # Anything not named below is refused.
+  default: deny
+  rules:
+    - id: allow-search
+      effect: allow
+      tool: search_repos
+    - id: allow-read
+      effect: allow
+      tool: read_file
+    - id: allow-list
+      effect: allow
+      tool: list_dir
+    - id: allow-write
+      effect: allow
+      tool: write_file
+
+audit:
+  enabled: true
+  path: .mcpbox/audit.log
