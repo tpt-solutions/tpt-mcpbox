@@ -51,10 +51,8 @@ pub enum AuditError {
     /// An entry could not be encoded or decoded.
     #[error("audit entry is not valid JSON: {0}")]
     Json(#[from] serde_json::Error),
-    /// Another process holds the log's lock file.
-    #[error(
-        "audit log is in use by another process (lock file {path}); if no tpt-mcpbox is running, delete that file"
-    )]
+    /// Another process holds the log's lock.
+    #[error("audit log is in use by another process (lock file {path})")]
     Locked {
         /// Path of the lock file.
         path: String,
@@ -86,15 +84,17 @@ pub struct AuditLog {
     _lock: LockFile,
 }
 
-/// Exclusive claim on a log file, released when the `AuditLog` is dropped.
+/// Exclusive OS-level lock on a log file, held for the life of the `AuditLog`.
 ///
 /// Two writers on one file would interleave entries and break the chain, so a
-/// second `open` is refused while the lock exists. The claim is a file created
-/// with `create_new`, which is atomic on every platform. If a process is killed
-/// without releasing it, the file stays and must be removed by hand.
+/// second `open` is refused while the first holds the lock. The lock belongs to
+/// the open file handle, so the operating system releases it when the process
+/// exits for any reason, including a kill. The lock file itself is left in
+/// place: its presence means nothing, only the lock does.
 #[derive(Debug)]
 struct LockFile {
-    path: PathBuf,
+    // Held, not read: dropping the handle releases the lock.
+    _file: File,
 }
 
 impl LockFile {
@@ -102,25 +102,25 @@ impl LockFile {
         let mut name = log.as_os_str().to_owned();
         name.push(".lock");
         let path = PathBuf::from(name);
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut file) => {
-                // The PID is only for the person who has to clear a stale lock.
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        match fs4::FileExt::try_lock(&file) {
+            Ok(()) => {
+                // The PID is only a hint for whoever inspects the file.
+                let mut file = file;
+                file.set_len(0)?;
                 let _ = writeln!(file, "{}", std::process::id());
-                Ok(Self { path })
+                Ok(Self { _file: file })
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                Err(AuditError::Locked {
-                    path: path.display().to_string(),
-                })
-            }
-            Err(error) => Err(error.into()),
+            Err(fs4::TryLockError::WouldBlock) => Err(AuditError::Locked {
+                path: path.display().to_string(),
+            }),
+            Err(fs4::TryLockError::Error(error)) => Err(error.into()),
         }
-    }
-}
-
-impl Drop for LockFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -439,12 +439,12 @@ mod lock_tests {
     }
 
     #[test]
-    fn lock_file_is_removed_on_drop() {
+    fn leftover_lock_file_without_a_holder_does_not_block_open() {
+        // A crashed process leaves the file behind but no lock. Only the lock
+        // counts, so the next start must succeed.
         let dir = tempdir().unwrap();
         let path = dir.path().join("audit.jsonl");
-        let log = AuditLog::open(&path).unwrap();
-        assert!(dir.path().join("audit.jsonl.lock").exists());
-        drop(log);
-        assert!(!dir.path().join("audit.jsonl.lock").exists());
+        std::fs::write(dir.path().join("audit.jsonl.lock"), "99999\n").unwrap();
+        assert!(AuditLog::open(&path).is_ok());
     }
 }
