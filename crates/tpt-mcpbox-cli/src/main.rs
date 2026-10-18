@@ -22,6 +22,7 @@ use tpt_mcpbox_config::load;
 use tpt_mcpbox_config::secrets::{self, SecretStore, SourceKind};
 use tpt_mcpbox_config::validate::{self, Severity, ValidationMode};
 
+mod init;
 mod serve;
 
 /// Binary version string, also reported in the `initialize` handshake.
@@ -75,8 +76,28 @@ enum Command {
         #[arg(short, long, value_name = "PATH")]
         config: Option<PathBuf>,
     },
+    /// Scaffold a new project.
+    Init {
+        /// What to scaffold.
+        #[command(subcommand)]
+        command: InitCommand,
+    },
     /// Print the version and exit.
     Version,
+}
+
+#[derive(Debug, Subcommand)]
+enum InitCommand {
+    /// Create a tool component project that builds against the guest SDK.
+    Tool {
+        /// Directory to create; it must be empty or absent.
+        #[arg(value_name = "DIR")]
+        dir: PathBuf,
+        /// Path to the `tpt-mcpbox-sdk` crate. Written as a path dependency,
+        /// since the SDK is not published yet.
+        #[arg(long, value_name = "PATH")]
+        sdk_path: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -104,6 +125,9 @@ fn main() -> ExitCode {
         } => validate_command(config.as_deref(), warn_only, offline),
         Command::Schema { output } => schema_command(output.as_deref()),
         Command::Run { config } => run_command(config.as_deref()),
+        Command::Init {
+            command: InitCommand::Tool { dir, sdk_path },
+        } => init_tool_command(&dir, &sdk_path),
         Command::Audit {
             command: AuditCommand::Verify { log, config },
         } => audit_verify_command(log.as_deref(), config.as_deref()),
@@ -218,6 +242,19 @@ fn report_environment(loaded: &load::LoadedConfig, path: &Path) {
     if !store.is_empty() {
         println!("resolved secret(s): {}", store.names().join(", "));
     }
+}
+
+/// Scaffold a tool component project and list the files written.
+fn init_tool_command(dir: &Path, sdk_path: &Path) -> Result<ExitCode, String> {
+    let written = init::scaffold_tool(dir, sdk_path)?;
+    for path in &written {
+        println!("created {}", path.display());
+    }
+    println!(
+        "build it with: cd {} && cargo build --release --target wasm32-wasip2",
+        dir.display()
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Start the hub. Stdout carries the protocol, so logs go to stderr only.

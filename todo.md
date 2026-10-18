@@ -158,8 +158,8 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 - [~] Ergonomic HTTP helper over `wasi:http` (JSON get/post, error mapping) **Done:** `http::get_json` and `post_json`, with status and JSON error mapping. The denied-without-grant path is verified; a granted successful call is not yet, since it needs a reachable HTTPS endpoint.
 - [~] Structured tool errors + result content builders — **done:** text and JSON results, `ToolError` with `isError` reporting. **Open:** resource content blocks.
 - [ ] Optional resource/prompt provider traits (full parity)
-- [ ] `cargo component`-based project template + `tpt-mcpbox init tool` generator
-- [~] SDK doc page + a "hello world" tool walkthrough **Done:** `crates/tpt-mcpbox-sdk/README.md` and `examples/hello` (greet, add, fetch). **Open:** `init tool` scaffold.
+- [x] `cargo component`-based project template + `tpt-mcpbox init tool` generator — **done:** `init tool <DIR> --sdk-path <PATH>` writes a starter project (path dependency on the SDK, since it is not published); the scaffold builds for wasm32-wasip2 and runs through the hub. Uses a plain cdylib build, not `cargo component`.
+- [~] SDK doc page + a "hello world" tool walkthrough **Done:** `crates/tpt-mcpbox-sdk/README.md` and `examples/hello` (greet, add, fetch).
 
 ## Phase 8 — Example Tools (`tools/`)
 

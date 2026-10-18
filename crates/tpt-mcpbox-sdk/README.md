@@ -67,4 +67,4 @@ and use HTTPS. A refused request is returned as a tool error, not a panic.
 - There is no `#[tool]` attribute macro yet. `Tool` plus `export_tools!` does
   the same job without a proc-macro crate.
 - Resource and prompt providers are not in the SDK yet; tools only.
-- The `tpt-mcpbox init tool` scaffold is not written yet.
+- `tpt-mcpbox init tool <DIR> --sdk-path <PATH>` writes a starter project. The SDK path is required because the SDK is not published.
