@@ -24,6 +24,7 @@ use tpt_mcpbox_config::validate::{self, Severity, ValidationMode};
 
 mod init;
 mod serve;
+mod tools;
 
 /// Binary version string, also reported in the `initialize` handshake.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -69,6 +70,12 @@ enum Command {
         #[command(subcommand)]
         command: AuditCommand,
     },
+    /// List the configured tools, or call one for debugging.
+    Tools {
+        /// Tools subcommand to run.
+        #[command(subcommand)]
+        command: ToolsCommand,
+    },
     /// Policy commands.
     Policy {
         /// Policy subcommand to run.
@@ -109,6 +116,32 @@ enum InitCommand {
         /// since the SDK is not published yet.
         #[arg(long, value_name = "PATH")]
         sdk_path: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ToolsCommand {
+    /// Print each tool the configuration exposes.
+    Ls {
+        /// Configuration file; discovered from the working directory when
+        /// omitted.
+        #[arg(short, long, value_name = "PATH")]
+        config: Option<PathBuf>,
+    },
+    /// Call one tool and print its result. Goes through the same policy,
+    /// limits and audit log as `run`, so it is refused while a hub is running
+    /// against the same audit log.
+    Call {
+        /// Exposed tool name, as shown by `tools ls`.
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// Arguments as a JSON object, e.g. '{"path":"notes.md"}'.
+        #[arg(short, long, value_name = "JSON")]
+        args: Option<String>,
+        /// Configuration file; discovered from the working directory when
+        /// omitted.
+        #[arg(short, long, value_name = "PATH")]
+        config: Option<PathBuf>,
     },
 }
 
@@ -168,6 +201,12 @@ fn main() -> ExitCode {
         Command::Policy {
             command: PolicyCommand::Test { input, config },
         } => policy_test_command(&input, config.as_deref()),
+        Command::Tools {
+            command: ToolsCommand::Ls { config },
+        } => tools::list_command(config.as_deref()),
+        Command::Tools {
+            command: ToolsCommand::Call { name, args, config },
+        } => tools::call_command(config.as_deref(), &name, args.as_deref()),
         Command::Version => {
             println!("tpt-mcpbox {VERSION}");
             Ok(ExitCode::SUCCESS)
