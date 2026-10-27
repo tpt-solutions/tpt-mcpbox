@@ -146,6 +146,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          # The bench builds the guest fixture for this target.
+          targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
       - run: cargo bench -p tpt-mcpbox-runtime --bench invocation -- --warm-up-time 2 --measurement-time 5
       - name: Check the warm-call median is under 5 ms

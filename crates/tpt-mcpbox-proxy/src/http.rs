@@ -276,10 +276,10 @@ async fn read_sse_response(mut body: Incoming, id: &Id) -> Result<Response, Upst
                     continue;
                 }
                 let event = std::mem::take(&mut data);
-                if let Some(response) = parse_event(event.trim_end()) {
-                    if &response.id == id {
-                        return Ok(response);
-                    }
+                if let Some(response) = parse_event(event.trim_end())
+                    && &response.id == id
+                {
+                    return Ok(response);
                 }
             } else if let Some(rest) = line.strip_prefix("data:") {
                 data.push_str(rest.strip_prefix(' ').unwrap_or(rest));
