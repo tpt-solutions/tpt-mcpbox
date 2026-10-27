@@ -168,10 +168,10 @@ impl Gate {
             None => None,
         };
 
-        if let Some(bucket) = &self.bucket {
-            if !lock(bucket).take(now) {
-                return Err(GateError::Rate);
-            }
+        if let Some(bucket) = &self.bucket
+            && !lock(bucket).take(now)
+        {
+            return Err(GateError::Rate);
         }
 
         Ok(permit)
