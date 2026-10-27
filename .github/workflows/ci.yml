@@ -98,5 +98,29 @@ jobs:
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-component --locked
-      - run: cargo component build --release --manifest-path tools/github/Cargo.toml
-      - run: cargo component build --release --manifest-path tools/fs/Cargo.toml
+      - run: cargo component build --release --manifest-path tools/tpt-mcpbox-tool-github/Cargo.toml
+      - run: cargo component build --release --manifest-path tools/tpt-mcpbox-tool-fs/Cargo.toml
+
+  # Parser fuzzing: each target runs for a bounded time on every change. A
+  # crash fails the job and uploads the reproducer as an artifact.
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [jsonrpc_parse, config_load, policy_input]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+      - run: cargo install cargo-fuzz --locked
+      - run: cargo fuzz run --fuzz-dir fuzz ${{ matrix.target }} -- -max_total_time=60
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
