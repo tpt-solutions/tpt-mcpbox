@@ -17,8 +17,9 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use tpt_mcpbox_config::load;
+use tpt_mcpbox_config::model::{LogLevel, LoggingConfig};
 use tpt_mcpbox_config::secrets::{self, SecretStore, SourceKind};
 use tpt_mcpbox_config::validate::{self, Severity, ValidationMode};
 
@@ -100,6 +101,18 @@ enum Command {
         /// What to scaffold; omit to write a starter configuration.
         #[command(subcommand)]
         command: Option<InitCommand>,
+    },
+    /// Print a shell completion script to stdout.
+    Completions {
+        /// Shell to generate the script for.
+        #[arg(value_name = "SHELL")]
+        shell: clap_complete::Shell,
+    },
+    /// Write man pages for the command and its subcommands.
+    Manpage {
+        /// Directory to write the `.1` files into; created when missing.
+        #[arg(value_name = "DIR")]
+        dir: PathBuf,
     },
     /// Print the version and exit.
     Version,
@@ -207,6 +220,12 @@ fn main() -> ExitCode {
         Command::Tools {
             command: ToolsCommand::Call { name, args, config },
         } => tools::call_command(config.as_deref(), &name, args.as_deref()),
+        Command::Completions { shell } => {
+            let mut command = Cli::command();
+            clap_complete::generate(shell, &mut command, "tpt-mcpbox", &mut std::io::stdout());
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Manpage { dir } => manpage_command(&dir),
         Command::Version => {
             println!("tpt-mcpbox {VERSION}");
             Ok(ExitCode::SUCCESS)
@@ -346,19 +365,12 @@ fn init_tool_command(dir: &Path, sdk_path: &Path) -> Result<ExitCode, String> {
 
 /// Start the hub. Stdout carries the protocol, so logs go to stderr only.
 fn run_command(config_path: Option<&Path>) -> Result<ExitCode, String> {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .init();
-
     let cwd = std::env::current_dir()
         .map_err(|error| format!("cannot read the working directory: {error}"))?;
     let (path, _) = load::discover(config_path, &|name| std::env::var(name).ok(), &cwd)
         .map_err(|error| error.to_string())?;
     let loaded = load::load_file(&path).map_err(|error| error.to_string())?;
+    init_logging(&loaded.config.logging);
     let base = path.parent().unwrap_or(Path::new("."));
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -375,6 +387,60 @@ fn run_command(config_path: Option<&Path>) -> Result<ExitCode, String> {
         .await
     })?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Write `tpt-mcpbox.1` and one page per subcommand, e.g. `tpt-mcpbox-tools-ls.1`.
+fn manpage_command(dir: &Path) -> Result<ExitCode, String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
+    let mut written = 0_usize;
+    // Each page is named after its full command path, so `ls` under `tools`
+    // does not collide with any other `ls`.
+    let mut pending = vec![("tpt-mcpbox".to_owned(), Cli::command())];
+    while let Some((name, command)) = pending.pop() {
+        let mut buffer = Vec::new();
+        clap_mangen::Man::new(command.clone().bin_name(name.clone()))
+            .render(&mut buffer)
+            .map_err(|error| format!("cannot render {name}: {error}"))?;
+        let path = dir.join(format!("{name}.1"));
+        std::fs::write(&path, buffer)
+            .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+        println!("created {}", path.display());
+        written += 1;
+        for sub in command.get_subcommands() {
+            pending.push((format!("{name}-{}", sub.get_name()), sub.clone()));
+        }
+    }
+    println!("wrote {written} man page(s)");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Install the stderr log subscriber from the `logging` section.
+///
+/// `RUST_LOG` overrides the configured level for a single run. JSON output
+/// (the default) carries the enclosing request span, so each log line names the
+/// tool, caller, outcome and duration of the call it belongs to.
+fn init_logging(settings: &LoggingConfig) {
+    let level = match settings.level {
+        LogLevel::Debug => "debug",
+        LogLevel::Info => "info",
+        LogLevel::Warn => "warn",
+        LogLevel::Error => "error",
+    };
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level));
+    let builder = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(filter);
+    if settings.json {
+        builder
+            .json()
+            .with_current_span(settings.spans)
+            .with_span_list(settings.spans)
+            .init();
+    } else {
+        builder.init();
+    }
 }
 
 /// Verify the audit chain and print its length and head hash.
@@ -531,6 +597,15 @@ policy:
 
         let err = policy_test_command(&bad, Some(&config)).unwrap_err();
         assert!(err.contains("not a policy input"), "{err}");
+    }
+
+    #[test]
+    fn manpage_writes_a_page_per_command_path() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(manpage_command(dir.path()).is_ok());
+        assert!(dir.path().join("tpt-mcpbox.1").is_file());
+        assert!(dir.path().join("tpt-mcpbox-tools-call.1").is_file());
+        assert!(dir.path().join("tpt-mcpbox-audit-verify.1").is_file());
     }
 
     #[test]

@@ -40,6 +40,8 @@ tpt-mcpbox-audit = { path = "crates/tpt-mcpbox-audit", version = "0.1.0" }
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "macros", "tokio"] }
 clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+clap_mangen = "0.3"
 futures = "0.3"
 globset = "0.4"
 http = "1"
