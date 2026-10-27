@@ -449,10 +449,10 @@ fn matches(rule: &CompiledRule, ctx: &Context<'_>) -> bool {
             _ => return false,
         }
     }
-    if let Some(method) = &rule.method {
-        if method != ctx.method {
-            return false;
-        }
+    if let Some(method) = &rule.method
+        && method != ctx.method
+    {
+        return false;
     }
     if let Some(caller_glob) = &rule.caller {
         match ctx.caller {

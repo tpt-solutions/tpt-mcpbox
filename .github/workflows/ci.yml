@@ -38,6 +38,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          # The sandbox tests build the guest fixture for this target.
+          targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-targets
       - run: cargo test --workspace --doc
@@ -54,17 +57,23 @@ jobs:
 
   # Cross-compile check for the four release targets. Guest crates are excluded
   # from the workspace, so this stays fast.
+  # Each target runs on its own host. C build scripts such as ring's use the
+  # host cc, which only accepts the Apple flags on macOS.
   cross:
     name: check ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
-          - x86_64-pc-windows-msvc
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -102,10 +111,13 @@ jobs:
       - run: cargo component build --release --manifest-path tools/tpt-mcpbox-tool-fs/Cargo.toml
 
   # Parser fuzzing: each target runs for a bounded time on every change. A
-  # crash fails the job and uploads the reproducer as an artifact.
+  # crash fails the job and uploads the reproducer as an artifact. The sanitizer
+  # flags need nightly, so the job pins it for every step, not just the install.
   fuzz:
     name: fuzz (${{ matrix.target }})
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: nightly
     strategy:
       fail-fast: false
       matrix:
