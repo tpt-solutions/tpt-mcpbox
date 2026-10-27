@@ -1,0 +1,12 @@
+# release-plz: keeps the version and changelog up to date through release PRs.
+#
+# Publishing is switched off on purpose. Crates go to crates.io, and the GitHub
+# release is cut, only after the v0.1.0 checklist in todo.md is signed off.
+# Flip these to `true` at that point, not before.
+
+[workspace]
+changelog_update = true
+publish = false
+git_release_enable = false
+git_tag_enable = false
+pr_labels = ["release"]

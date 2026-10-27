@@ -124,3 +124,55 @@ jobs:
           name: fuzz-crash-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}
           if-no-files-found: ignore
+
+  # The warm-pool overhead budget from the spec (< 5 ms per invocation). The
+  # check uses the median of criterion's estimate, on a shared runner, so it is
+  # a regression alarm rather than a precise measurement.
+  bench:
+    name: benchmark (warm invocation)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo bench -p tpt-mcpbox-runtime --bench invocation -- --warm-up-time 2 --measurement-time 5
+      - name: Check the warm-call median is under 5 ms
+        shell: bash
+        run: |
+          estimates=$(find target/criterion -path '*warm*echo*invocation*new*estimates.json' | head -n 1)
+          test -n "$estimates" || { echo "no criterion estimate found"; exit 1; }
+          median=$(jq '.median.point_estimate' "$estimates")
+          echo "warm echo median: ${median} ns"
+          awk -v m="$median" 'BEGIN { exit !(m < 5000000) }'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: criterion-report
+          path: target/criterion
+          if-no-files-found: ignore
+
+  # Software bill of materials for the host workspace, in CycloneDX. The release
+  # job attaches it to the GitHub release once that workflow exists.
+  sbom:
+    name: sbom (CycloneDX)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-cyclonedx --locked
+      - run: cargo cyclonedx --format json --all --override-filename tpt-mcpbox-sbom
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: "**/tpt-mcpbox-sbom.cdx.json"
+
+  # The book is built on every change so that a broken include or link fails
+  # the build. Publishing it is a separate decision.
+  docs:
+    name: docs (mdbook)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo install mdbook --locked
+      - run: mdbook build

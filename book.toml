@@ -1,0 +1,12 @@
+# mdBook site: `mdbook build` writes to ./book (gitignored); `mdbook serve` for
+# a live preview. Sources live in docs/book/src.
+
+[book]
+title = "tpt-mcpbox"
+description = "Local-first, zero-trust MCP proxy and WebAssembly tool runtime"
+authors = ["TPT Solutions"]
+language = "en"
+src = "docs/book/src"
+
+[build]
+build-dir = "book"
