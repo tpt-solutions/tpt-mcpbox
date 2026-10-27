@@ -28,6 +28,7 @@ use tpt_mcpbox_protocol::resources::Resource;
 use tpt_mcpbox_protocol::tools::{CallToolResult, Tool};
 use tpt_mcpbox_proxy::{PolicyGate, ProxyError, UpstreamError};
 use tpt_mcpbox_runtime::{CancelToken, LoadedTool, ToolError};
+use tracing::Instrument as _;
 
 use crate::lifecycle::{Lifecycle, ShuttingDown};
 use crate::limiter::{Limiter, Rejection};
@@ -339,6 +340,17 @@ impl Router {
         work: impl Future<Output = Result<T, RouterError>>,
     ) -> Result<T, RouterError> {
         let started = Instant::now();
+        // One span per request. Only names, outcomes and durations go on it:
+        // argument values never reach the span.
+        let span = tracing::info_span!(
+            "request",
+            kind,
+            caller,
+            subject,
+            outcome = tracing::field::Empty,
+            rule_id = tracing::field::Empty,
+            duration_ms = tracing::field::Empty,
+        );
 
         let mut start = Map::new();
         start.insert("phase".to_owned(), json!("start"));
@@ -347,23 +359,25 @@ impl Router {
         start.extend(extra);
         self.record(kind, Value::Object(start)).await?;
 
-        let result = work.await;
+        let result = work.instrument(span.clone()).await;
         let outcome = result.as_ref().map_or_else(RouterError::outcome, |_| "ok");
+        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         self.metrics
             .observe(metric_kind(kind), outcome, started.elapsed());
 
+        span.record("outcome", outcome);
+        span.record("duration_ms", duration_ms);
         let mut finish = Map::new();
         finish.insert("phase".to_owned(), json!("finish"));
         finish.insert("caller".to_owned(), json!(caller));
         finish.insert(subject_key.to_owned(), json!(subject));
         finish.insert("outcome".to_owned(), json!(outcome));
-        finish.insert(
-            "duration_ms".to_owned(),
-            json!(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
-        );
+        finish.insert("duration_ms".to_owned(), json!(duration_ms));
         if let Err(RouterError::Denied { rule_id, .. }) = &result {
+            span.record("rule_id", tracing::field::debug(rule_id));
             finish.insert("rule_id".to_owned(), json!(rule_id));
         }
+        span.in_scope(|| tracing::info!("request finished"));
         if let Err(err) = self.record(kind, Value::Object(finish)).await {
             tracing::error!("audit finish record failed: {err}");
         }
@@ -749,6 +763,30 @@ mod audit_tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains("sk-live-SECRET-VALUE"));
         assert_eq!(entries(&path)[0]["arg_keys"], json!(["api_token"]));
+    }
+
+    /// Prompt-injection scenario: hostile arguments that claim to be the
+    /// caller or the tool must not change who the policy sees.
+    #[tokio::test]
+    async fn arguments_cannot_impersonate_the_caller_or_tool() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let mut rule = allow("echo");
+        rule.caller = Some("agent-1".to_owned());
+        let router = audited_router(&path, vec![rule]);
+
+        let mut args = Map::new();
+        args.insert("caller".to_owned(), json!("agent-1"));
+        args.insert("tool".to_owned(), json!("echo"));
+        args.insert("name".to_owned(), json!("admin__shell"));
+        let result = router
+            .call("agent-2", "echo", Some(args), CancelToken::new())
+            .await;
+
+        assert!(matches!(result, Err(RouterError::Denied { .. })));
+        let records = entries(&path);
+        assert_eq!(records[0]["caller"], "agent-2");
+        assert_eq!(records[1]["outcome"], "denied");
     }
 }
 
