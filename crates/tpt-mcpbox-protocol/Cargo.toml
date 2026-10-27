@@ -30,4 +30,5 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+jsonschema = { version = "0.60", default-features = false }
 tokio = { workspace = true, features = ["test-util"] }
