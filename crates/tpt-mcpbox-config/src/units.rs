@@ -111,7 +111,7 @@ pub fn format_byte_size(bytes: u64) -> String {
         (1, "B"),
     ];
     for (factor, suffix) in UNITS {
-        if bytes >= factor && bytes % factor == 0 {
+        if bytes >= factor && bytes.is_multiple_of(factor) {
             return format!("{}{suffix}", bytes / factor);
         }
     }

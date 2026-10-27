@@ -53,7 +53,7 @@ pub enum LoadError {
         /// Path that failed.
         path: PathBuf,
         /// Underlying serde error.
-        source: serde_yaml::Error,
+        source: serde_norway::Error,
     },
 
     /// The document declares a schema version this build does not implement.
@@ -126,21 +126,21 @@ pub struct LayeredConfig {
 /// Returns [`LoadError::Parse`] when the YAML does not match the schema, and
 /// [`LoadError::UnsupportedVersion`] for a document from the future.
 pub fn load_str(yaml: &str, origin: &str) -> Result<Config, LoadError> {
-    let config: Config = serde_yaml::from_str(yaml).map_err(|source| LoadError::Parse {
+    let config: Config = serde_norway::from_str(yaml).map_err(|source| LoadError::Parse {
         path: PathBuf::from(origin),
         source,
     })?;
 
     // A future document may add fields this build would silently ignore, which
     // for a security tool means quietly missing a capability restriction.
-    if let Some(version) = config.version {
-        if version > crate::model::CONFIG_VERSION {
-            return Err(LoadError::UnsupportedVersion {
-                path: PathBuf::from(origin),
-                found: version,
-                supported: crate::model::CONFIG_VERSION,
-            });
-        }
+    if let Some(version) = config.version
+        && version > crate::model::CONFIG_VERSION
+    {
+        return Err(LoadError::UnsupportedVersion {
+            path: PathBuf::from(origin),
+            found: version,
+            supported: crate::model::CONFIG_VERSION,
+        });
     }
     Ok(config)
 }

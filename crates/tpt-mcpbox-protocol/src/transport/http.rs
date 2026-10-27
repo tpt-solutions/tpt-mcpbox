@@ -433,12 +433,10 @@ async fn post_message(State(state): State<Arc<HttpState>>, request: Request) -> 
     };
 
     let mut response = (StatusCode::OK, axum::Json(body)).into_response();
-    if is_new {
-        if let Ok(value) = HeaderValue::from_str(slot.id.as_str()) {
-            response
-                .headers_mut()
-                .insert(header::HeaderName::from_static(SESSION_HEADER), value);
-        }
+    if is_new && let Ok(value) = HeaderValue::from_str(slot.id.as_str()) {
+        response
+            .headers_mut()
+            .insert(header::HeaderName::from_static(SESSION_HEADER), value);
     }
     response
 }

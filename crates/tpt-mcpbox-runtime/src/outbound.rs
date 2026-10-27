@@ -10,15 +10,18 @@
 //! are applied.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use globset::{GlobBuilder, GlobMatcher};
 use http::header::{HeaderMap, HeaderName, HeaderValue};
-use http::{Uri, uri::Scheme};
+use http::{Request, Response, Uri, uri::Scheme};
 use tpt_mcpbox_policy::normalize::normalize_host;
-use wasmtime_wasi_http::bindings::http::types::ErrorCode;
-use wasmtime_wasi_http::types::OutgoingRequestConfig;
+use wasmtime_wasi_http::{
+    Error as HttpError, RequestOptions, WasiBody, WasiHttpHooks, default_send_request,
+};
 
 use crate::error::ToolError;
 
@@ -136,17 +139,21 @@ impl HttpPolicy {
                 "host `{host}` is not on the allowlist"
             )));
         }
-        if let Some(size) = declared_body {
-            if size > self.max_request_bytes {
-                return Err(Refusal::BodyTooLarge(size));
-            }
+        if let Some(size) = declared_body
+            && size > self.max_request_bytes
+        {
+            return Err(Refusal::BodyTooLarge(size));
         }
         Ok(())
     }
 
     /// Strip hop-by-hop headers, inject secret headers, and clamp timeouts to the
     /// tool's time limit. Call only after [`HttpPolicy::admit`] has passed.
-    pub(crate) fn prepare(&self, headers: &mut HeaderMap, config: &mut OutgoingRequestConfig) {
+    pub(crate) fn prepare(
+        &self,
+        headers: &mut HeaderMap,
+        options: RequestOptions,
+    ) -> RequestOptions {
         // Headers named by `Connection` are hop-scoped too, so drop them as well.
         let named: Vec<HeaderName> = headers
             .get_all(http::header::CONNECTION)
@@ -168,23 +175,70 @@ impl HttpPolicy {
             headers.insert(name.clone(), value.clone());
         }
 
-        config.connect_timeout = config.connect_timeout.min(self.time_limit);
-        config.first_byte_timeout = config.first_byte_timeout.min(self.time_limit);
-        config.between_bytes_timeout = config.between_bytes_timeout.min(self.time_limit);
+        // An unset timeout means "as long as the tool may run", so it is never
+        // left open-ended.
+        let clamp = |timeout: Option<Duration>| {
+            Some(timeout.unwrap_or(self.time_limit).min(self.time_limit))
+        };
+        RequestOptions {
+            connect_timeout: clamp(options.connect_timeout),
+            first_byte_timeout: clamp(options.first_byte_timeout),
+            between_bytes_timeout: clamp(options.between_bytes_timeout),
+        }
     }
 
     /// Map a refusal onto the `wasi:http` error the guest receives.
-    pub(crate) fn error_code(&self, refusal: &Refusal) -> ErrorCode {
+    pub(crate) fn error(&self, refusal: &Refusal) -> HttpError {
         match refusal {
             Refusal::Denied(reason) => {
                 tracing::warn!(tool = %self.tool, reason, "outbound request refused");
-                ErrorCode::HttpRequestDenied
+                HttpError::HttpRequestDenied
             }
             Refusal::BodyTooLarge(size) => {
                 tracing::warn!(tool = %self.tool, size, "outbound body over limit");
-                ErrorCode::HttpRequestBodySize(Some(*size))
+                HttpError::HttpRequestBodySize(Some(*size))
             }
         }
+    }
+}
+
+/// The `wasi:http` hooks for one tool. Every outbound request passes through
+/// [`HttpPolicy`] before `default_send_request` sends it.
+pub(crate) struct PolicyHooks(pub(crate) Arc<HttpPolicy>);
+
+impl WasiHttpHooks for PolicyHooks {
+    fn send_request(
+        &mut self,
+        mut request: Request<WasiBody>,
+        options: Option<RequestOptions>,
+        fut: Box<dyn Future<Output = Result<(), HttpError>> + Send>,
+    ) -> Box<
+        dyn Future<
+                Output = Result<
+                    (
+                        Response<WasiBody>,
+                        Box<dyn Future<Output = Result<(), HttpError>> + Send>,
+                    ),
+                    HttpError,
+                >,
+            > + Send,
+    > {
+        let policy = Arc::clone(&self.0);
+        if let Err(refusal) = policy.admit(request.uri(), declared_length(request.headers())) {
+            return Box::new(async move { Err(policy.error(&refusal)) });
+        }
+        let options = policy.prepare(request.headers_mut(), options.unwrap_or_default());
+        // Dropped, as the wasmtime default implementation does.
+        _ = fut;
+        Box::new(async move {
+            use http_body_util::BodyExt;
+
+            let (response, io) = default_send_request(request, Some(options)).await?;
+            Ok((
+                response.map(BodyExt::boxed_unsync),
+                Box::new(io) as Box<dyn Future<Output = _> + Send>,
+            ))
+        })
     }
 }
 
@@ -353,8 +407,7 @@ mod tests {
         headers.insert("transfer-encoding", HeaderValue::from_static("chunked"));
         headers.insert("accept", HeaderValue::from_static("application/json"));
 
-        let mut config = default_config();
-        policy.prepare(&mut headers, &mut config);
+        policy.prepare(&mut headers, default_config());
 
         assert!(headers.get("x-internal").is_none());
         assert!(headers.get("keep-alive").is_none());
@@ -381,8 +434,7 @@ mod tests {
             "authorization",
             HeaderValue::from_static("Bearer guest-guess"),
         );
-        let mut config = default_config();
-        policy.prepare(&mut headers, &mut config);
+        policy.prepare(&mut headers, default_config());
 
         let value = headers.get("authorization").expect("present");
         assert_eq!(value, "Bearer real-token");
@@ -392,11 +444,22 @@ mod tests {
     #[test]
     fn timeouts_are_clamped_to_the_tool_time_limit() {
         let policy = policy(&["api.github.com"]);
-        let mut config = default_config();
-        config.first_byte_timeout = Duration::from_secs(600);
-        policy.prepare(&mut HeaderMap::new(), &mut config);
-        assert_eq!(config.first_byte_timeout, Duration::from_secs(5));
-        assert_eq!(config.connect_timeout, Duration::from_secs(1));
+        let requested = RequestOptions {
+            first_byte_timeout: Some(Duration::from_secs(600)),
+            ..default_config()
+        };
+        let options = policy.prepare(&mut HeaderMap::new(), requested);
+        assert_eq!(options.first_byte_timeout, Some(Duration::from_secs(5)));
+        assert_eq!(options.connect_timeout, Some(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn unset_timeouts_default_to_the_tool_time_limit() {
+        let policy = policy(&["api.github.com"]);
+        let options = policy.prepare(&mut HeaderMap::new(), RequestOptions::default());
+        assert_eq!(options.connect_timeout, Some(Duration::from_secs(5)));
+        assert_eq!(options.first_byte_timeout, Some(Duration::from_secs(5)));
+        assert_eq!(options.between_bytes_timeout, Some(Duration::from_secs(5)));
     }
 
     #[test]
@@ -439,12 +502,11 @@ mod tests {
         }
     }
 
-    fn default_config() -> OutgoingRequestConfig {
-        OutgoingRequestConfig {
-            use_tls: true,
-            connect_timeout: Duration::from_secs(1),
-            first_byte_timeout: Duration::from_secs(30),
-            between_bytes_timeout: Duration::from_secs(30),
+    fn default_config() -> RequestOptions {
+        RequestOptions {
+            connect_timeout: Some(Duration::from_secs(1)),
+            first_byte_timeout: Some(Duration::from_secs(30)),
+            between_bytes_timeout: Some(Duration::from_secs(30)),
         }
     }
 }

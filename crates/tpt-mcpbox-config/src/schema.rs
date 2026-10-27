@@ -129,11 +129,11 @@ mod tests {
                 node = lookup(root, reference);
                 continue;
             }
-            if let Some(items) = node.get("allOf").and_then(serde_json::Value::as_array) {
-                if items.len() == 1 {
-                    node = &items[0];
-                    continue;
-                }
+            if let Some(items) = node.get("allOf").and_then(serde_json::Value::as_array)
+                && items.len() == 1
+            {
+                node = &items[0];
+                continue;
             }
             break;
         }

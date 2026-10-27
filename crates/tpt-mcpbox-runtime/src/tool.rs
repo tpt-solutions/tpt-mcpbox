@@ -22,7 +22,7 @@ use wasmtime_wasi_http::WasiHttpCtx;
 use crate::bindings::Tool as Bindings;
 use crate::error::ToolError;
 use crate::module;
-use crate::outbound::HttpPolicy;
+use crate::outbound::{HttpPolicy, PolicyHooks};
 use crate::runtime::{CallControl, CancelToken, HostState, Runtime};
 use crate::sandbox::{self, WasiPlan};
 
@@ -332,6 +332,7 @@ impl Runtime {
             plan,
             http,
             memory_bytes,
+            time_limit,
             max: max_concurrent,
             recycle_after: DEFAULT_RECYCLE_AFTER,
             state: Mutex::new(PoolState::default()),
@@ -373,6 +374,7 @@ struct Pool {
     plan: WasiPlan,
     http: Arc<HttpPolicy>,
     memory_bytes: usize,
+    time_limit: Duration,
     max: usize,
     recycle_after: u32,
     state: Mutex<PoolState>,
@@ -439,14 +441,16 @@ impl Pool {
 
     fn instantiate(&self) -> Result<Slot, ToolError> {
         let wasi = sandbox::build_ctx(&self.tool, &self.plan)?;
+        // Instantiation runs under the same time limit as a call, so a slow start
+        // is interrupted rather than left unbounded.
         let state = HostState {
             wasi,
             http: WasiHttpCtx::new(),
             table: ResourceTable::new(),
             limits: Runtime::limits(self.memory_bytes),
-            http_policy: Arc::clone(&self.http),
+            hooks: PolicyHooks(Arc::clone(&self.http)),
             control: Arc::new(CallControl {
-                deadline: Instant::now(),
+                deadline: Instant::now() + self.time_limit,
                 cancel: CancelToken::new(),
             }),
         };

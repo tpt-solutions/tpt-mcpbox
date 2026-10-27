@@ -9,23 +9,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use hyper::Request;
 use wasmtime::component::Linker;
 use wasmtime::{
     Config, Engine, InstanceAllocationStrategy, PoolingAllocationConfig, Store, StoreLimits,
     StoreLimitsBuilder, UpdateDeadline,
 };
-use wasmtime_wasi::ResourceTable;
-use wasmtime_wasi::p2::IoView;
-use wasmtime_wasi::p2::{WasiCtx, WasiView};
-use wasmtime_wasi_http::body::HyperOutgoingBody;
-use wasmtime_wasi_http::types::{
-    HostFutureIncomingResponse, OutgoingRequestConfig, default_send_request,
-};
-use wasmtime_wasi_http::{HttpResult, WasiHttpCtx, WasiHttpView};
+use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView};
+use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpCtxView, WasiHttpView};
 
 use crate::error::ToolError;
-use crate::outbound::{HttpPolicy, declared_length};
+use crate::outbound::PolicyHooks;
 
 /// Interval at which the epoch counter advances. A tool's time limit is checked
 /// at this granularity, so a limit is enforced to within one tick.
@@ -78,40 +71,28 @@ pub(crate) struct HostState {
     pub(crate) http: WasiHttpCtx,
     pub(crate) table: ResourceTable,
     pub(crate) limits: StoreLimits,
-    pub(crate) http_policy: Arc<HttpPolicy>,
+    pub(crate) hooks: PolicyHooks,
     pub(crate) control: Arc<CallControl>,
 }
 
-impl IoView for HostState {
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.table
-    }
-}
-
 impl WasiView for HostState {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.wasi
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
     }
 }
 
 impl WasiHttpView for HostState {
-    fn ctx(&mut self) -> &mut WasiHttpCtx {
-        &mut self.http
-    }
-
-    /// Every outbound request is checked, cleaned and bounded here before it
-    /// leaves the host. See [`HttpPolicy`].
-    fn send_request(
-        &mut self,
-        mut request: Request<HyperOutgoingBody>,
-        mut config: OutgoingRequestConfig,
-    ) -> HttpResult<HostFutureIncomingResponse> {
-        let policy = Arc::clone(&self.http_policy);
-        if let Err(refusal) = policy.admit(request.uri(), declared_length(request.headers())) {
-            return Err(policy.error_code(&refusal).into());
+    /// Outbound requests go through `hooks`, where they are checked, cleaned and
+    /// bounded before they leave the host. See [`crate::outbound::HttpPolicy`].
+    fn http(&mut self) -> WasiHttpCtxView<'_> {
+        WasiHttpCtxView {
+            hooks: &mut self.hooks,
+            table: &mut self.table,
+            ctx: &mut self.http,
         }
-        policy.prepare(request.headers_mut(), &mut config);
-        Ok(default_send_request(request, config))
     }
 }
 
@@ -157,7 +138,7 @@ impl Runtime {
         let engine = Engine::new(&config).map_err(|e| engine_error(&e))?;
         let mut linker = Linker::new(&engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(|e| engine_error(&e))?;
-        wasmtime_wasi_http::add_only_http_to_linker_sync(&mut linker)
+        wasmtime_wasi_http::p2::add_only_http_to_linker_sync(&mut linker)
             .map_err(|e| engine_error(&e))?;
 
         let ticker = Ticker::start(engine.clone());

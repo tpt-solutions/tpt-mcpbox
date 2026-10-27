@@ -19,8 +19,7 @@ use std::path::{Path, PathBuf};
 
 use tpt_mcpbox_config::Capabilities;
 use tpt_mcpbox_policy::normalize::normalize_path;
-use wasmtime_wasi::p2::{WasiCtx, WasiCtxBuilder};
-use wasmtime_wasi::{DirPerms, FilePerms};
+use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxBuilder};
 
 use crate::error::ToolError;
 
@@ -136,13 +135,13 @@ pub(crate) fn build_ctx(tool: &str, plan: &WasiPlan) -> Result<WasiCtx, ToolErro
         builder.env(name, value);
     }
     for preopen in &plan.preopens {
-        let (dir, file) = if preopen.writable {
-            (DirPerms::all(), FilePerms::all())
+        let perms = if preopen.writable {
+            FsPerms::ReadWrite
         } else {
-            (DirPerms::READ, FilePerms::READ)
+            FsPerms::ReadOnly
         };
         builder
-            .preopened_dir(&preopen.host, &preopen.guest, dir, file)
+            .preopened_dir(&preopen.host, &preopen.guest, perms)
             .map_err(|e| ToolError::InvalidConfig {
                 tool: tool.to_owned(),
                 message: format!("cannot preopen {}: {e}", preopen.host.display()),

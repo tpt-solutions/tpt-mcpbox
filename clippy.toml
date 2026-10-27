@@ -1,6 +1,6 @@
 # Clippy configuration. Rustc lint levels live in Cargo.toml
 # `[workspace.lints]`; only clippy-specific knobs belong here.
-msrv = "1.85"
+msrv = "1.95"
 
 # Process-wide state changes are a design smell in a daemon: configuration must
 # be explicit so reloads are observable.

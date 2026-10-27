@@ -16,10 +16,9 @@ keywords = ["config","yaml","secrets","validation","json-schema"]
 workspace = true
 
 [dependencies]
-# serde_yaml is deprecated upstream but remains the only stable pure-Rust YAML
-# 1.2 implementation that does not pull in an unsafe C parser; revisit when the
-# ecosystem settles (tracked in todo.md, Phase 2).
-serde_yaml = "0.9"
+# serde_norway is a maintained drop-in fork of the deprecated serde_yaml 0.9,
+# with the same API and no unmaintained `unsafe-libyaml` dependency.
+serde_norway = { workspace = true }
 schemars = { version = "1", features = ["derive"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

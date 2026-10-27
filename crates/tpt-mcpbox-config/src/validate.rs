@@ -498,17 +498,16 @@ fn validate_upstreams(config: &Config, report: &mut ValidationReport) {
             )),
         }
 
-        if let Some(prefix) = &upstream.prefix {
-            if !prefix
+        if let Some(prefix) = &upstream.prefix
+            && !prefix
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            {
-                report.diagnostics.push(Diagnostic::error_with_hint(
-                    format!("{path}.prefix"),
-                    format!("`{prefix}` must match [A-Za-z0-9_-]"),
-                    "use a tool-name-safe prefix such as `gh__`",
-                ));
-            }
+        {
+            report.diagnostics.push(Diagnostic::error_with_hint(
+                format!("{path}.prefix"),
+                format!("`{prefix}` must match [A-Za-z0-9_-]"),
+                "use a tool-name-safe prefix such as `gh__`",
+            ));
         }
 
         for pattern in upstream.allow.iter().chain(upstream.deny.iter()) {
@@ -612,14 +611,14 @@ fn validate_policy(config: &Config, mode: ValidationMode, report: &mut Validatio
         }
     }
 
-    if let Some(rego) = &config.policy.rego {
-        if !rego.exists() {
-            report.diagnostics.push(Diagnostic::error_with_hint(
-                "policy.rego",
-                format!("{} does not exist", rego.display()),
-                "point `policy.rego` at the module or remove it",
-            ));
-        }
+    if let Some(rego) = &config.policy.rego
+        && !rego.exists()
+    {
+        report.diagnostics.push(Diagnostic::error_with_hint(
+            "policy.rego",
+            format!("{} does not exist", rego.display()),
+            "point `policy.rego` at the module or remove it",
+        ));
     }
 }
 

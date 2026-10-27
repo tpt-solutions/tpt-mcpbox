@@ -635,13 +635,15 @@ pub(crate) mod byte_size_option {
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Option<u64>, D::Error> {
-        let raw = Option::<serde_yaml::Value>::deserialize(deserializer)?;
+        let raw = Option::<serde_norway::Value>::deserialize(deserializer)?;
         match raw {
-            None | Some(serde_yaml::Value::Null) => Ok(None),
-            Some(serde_yaml::Value::Number(number)) => number.as_u64().map(Some).ok_or_else(|| {
-                serde::de::Error::custom("byte size must be a non-negative integer")
-            }),
-            Some(serde_yaml::Value::String(text)) => parse_byte_size(&text)
+            None | Some(serde_norway::Value::Null) => Ok(None),
+            Some(serde_norway::Value::Number(number)) => {
+                number.as_u64().map(Some).ok_or_else(|| {
+                    serde::de::Error::custom("byte size must be a non-negative integer")
+                })
+            }
+            Some(serde_norway::Value::String(text)) => parse_byte_size(&text)
                 .map(Some)
                 .map_err(serde::de::Error::custom),
             Some(other) => Err(serde::de::Error::custom(format!(
@@ -687,14 +689,14 @@ pub(crate) mod duration_option {
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Option<Duration>, D::Error> {
-        let raw = Option::<serde_yaml::Value>::deserialize(deserializer)?;
+        let raw = Option::<serde_norway::Value>::deserialize(deserializer)?;
         match raw {
-            None | Some(serde_yaml::Value::Null) => Ok(None),
-            Some(serde_yaml::Value::Number(number)) => number
+            None | Some(serde_norway::Value::Null) => Ok(None),
+            Some(serde_norway::Value::Number(number)) => number
                 .as_u64()
                 .map(|millis| Some(Duration::from_millis(millis)))
                 .ok_or_else(|| serde::de::Error::custom("duration must be a non-negative integer")),
-            Some(serde_yaml::Value::String(text)) => parse_duration(&text)
+            Some(serde_norway::Value::String(text)) => parse_duration(&text)
                 .map(Some)
                 .map_err(serde::de::Error::custom),
             Some(other) => Err(serde::de::Error::custom(format!(
@@ -722,13 +724,13 @@ pub(crate) mod duration_required {
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Duration, D::Error> {
-        let raw = serde_yaml::Value::deserialize(deserializer)?;
+        let raw = serde_norway::Value::deserialize(deserializer)?;
         match raw {
-            serde_yaml::Value::Number(number) => number
+            serde_norway::Value::Number(number) => number
                 .as_u64()
                 .map(Duration::from_millis)
                 .ok_or_else(|| serde::de::Error::custom("duration must be a non-negative integer")),
-            serde_yaml::Value::String(text) => {
+            serde_norway::Value::String(text) => {
                 parse_duration(&text).map_err(serde::de::Error::custom)
             }
             other => Err(serde::de::Error::custom(format!(
@@ -744,8 +746,8 @@ mod tests {
 
     use super::*;
 
-    fn parse_config(yaml: &str) -> Result<Config, serde_yaml::Error> {
-        serde_yaml::from_str(yaml)
+    fn parse_config(yaml: &str) -> Result<Config, serde_norway::Error> {
+        serde_norway::from_str(yaml)
     }
 
     #[test]
@@ -919,10 +921,10 @@ policy:
     #[test]
     fn config_serializes_back_to_yaml_with_units() {
         let config = Config::default();
-        let yaml = serde_yaml::to_string(&config).expect("serializes");
+        let yaml = serde_norway::to_string(&config).expect("serializes");
         assert!(yaml.contains("audit:"), "{yaml}");
         assert!(yaml.contains("64MiB"), "{yaml}");
-        let round_tripped: Config = serde_yaml::from_str(&yaml).expect("re-parses");
+        let round_tripped: Config = serde_norway::from_str(&yaml).expect("re-parses");
         assert_eq!(round_tripped.audit.max_segment_bytes, 64 << 20);
     }
 }
