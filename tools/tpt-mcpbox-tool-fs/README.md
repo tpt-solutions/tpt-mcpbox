@@ -12,6 +12,10 @@ It provides three tools:
 | `list_dir` | `path` | Lists a directory under the read root. Directories end with a slash. |
 | `write_file` | `path`, `content` | Writes a text file under the output root, replacing any existing file |
 
+Every `path` is relative to the root it applies to. For `write_file` that root is
+the granted output directory itself, so `a.md` writes `workspace/output/a.md`.
+Passing `output/a.md` writes `workspace/output/output/a.md`.
+
 ## Access model
 
 The configuration grants two directories:
@@ -45,6 +49,17 @@ sample configuration in [`examples/`](../../examples/tpt-mcpbox.yaml) expects.
 
 This is a guest crate with its own workspace, so build it for the guest target
 and exercise it through the hub. The crate has no host-side tests.
+
+To check it by hand against the sample configuration, with `workspace/notes.md`
+present next to the configuration:
+
+```sh
+tpt-mcpbox tools call read_file --args '{"path":"notes.md"}' --config tpt-mcpbox.yaml
+tpt-mcpbox tools call write_file --args '{"path":"a.md","content":"hi"}' --config tpt-mcpbox.yaml
+tpt-mcpbox tools call write_file --args '{"path":"../escape.md","content":"x"}' --config tpt-mcpbox.yaml   # refused
+```
+
+The last call is refused by the tool's own path check, before the sandbox is asked.
 
 ## License
 
