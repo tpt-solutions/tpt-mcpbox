@@ -40,8 +40,8 @@ Out of scope:
 ## Supported versions
 
 Security fixes are provided for the latest released minor version and the
-`main` branch until the next release. `main` is pre-release today, so prefer
-`main` until `v0.1.0` ships.
+`master` branch until the next release. `master` is pre-release today, so prefer
+`master` until `v0.1.0` ships.
 
 ## Hardening expectations for contributions
 

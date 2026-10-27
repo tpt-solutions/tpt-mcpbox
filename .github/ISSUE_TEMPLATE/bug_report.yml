@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Thanks for filing a bug. **Do not report security vulnerabilities here** --
-        see [SECURITY.md](https://github.com/tpt-solutions/tpt-mcpbox/blob/main/SECURITY.md).
+        see [SECURITY.md](https://github.com/tpt-solutions/tpt-mcpbox/blob/master/SECURITY.md).
 
   - type: input
     id: version

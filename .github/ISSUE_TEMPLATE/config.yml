@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/tpt-solutions/tpt-mcpbox/blob/main/SECURITY.md
+    url: https://github.com/tpt-solutions/tpt-mcpbox/blob/master/SECURITY.md
     about: Report privately via security@tpt-solutions.com -- never as a public issue.
   - name: Question or discussion
     url: https://github.com/tpt-solutions/tpt-mcpbox/discussions
