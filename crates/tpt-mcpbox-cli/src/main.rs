@@ -89,6 +89,13 @@ enum Command {
         /// omitted.
         #[arg(short, long, value_name = "PATH")]
         config: Option<PathBuf>,
+        /// Serve only this transport, overriding `server.transports`.
+        #[arg(long, value_name = "TRANSPORT")]
+        transport: Option<TransportArg>,
+        /// Report policy denials in the log and audit log without refusing
+        /// the calls, as `policy.dry_run` does.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Scaffold a starter configuration, or a new project with `init tool`.
     Init {
@@ -198,7 +205,11 @@ fn main() -> ExitCode {
             offline,
         } => validate_command(config.as_deref(), warn_only, offline),
         Command::Schema { output } => schema_command(output.as_deref()),
-        Command::Run { config } => run_command(config.as_deref()),
+        Command::Run {
+            config,
+            transport,
+            dry_run,
+        } => run_command(config.as_deref(), transport, dry_run),
         Command::Init {
             command: Some(InitCommand::Tool { dir, sdk_path }),
             ..
@@ -364,12 +375,17 @@ fn init_tool_command(dir: &Path, sdk_path: &Path) -> Result<ExitCode, String> {
 }
 
 /// Start the hub. Stdout carries the protocol, so logs go to stderr only.
-fn run_command(config_path: Option<&Path>) -> Result<ExitCode, String> {
+fn run_command(
+    config_path: Option<&Path>,
+    transport: Option<TransportArg>,
+    dry_run: bool,
+) -> Result<ExitCode, String> {
     let cwd = std::env::current_dir()
         .map_err(|error| format!("cannot read the working directory: {error}"))?;
     let (path, _) = load::discover(config_path, &|name| std::env::var(name).ok(), &cwd)
         .map_err(|error| error.to_string())?;
-    let loaded = load::load_file(&path).map_err(|error| error.to_string())?;
+    let mut loaded = load::load_file(&path).map_err(|error| error.to_string())?;
+    apply_run_overrides(&mut loaded.config, transport, dry_run);
     init_logging(&loaded.config.logging);
     let base = path.parent().unwrap_or(Path::new("."));
 
@@ -378,6 +394,8 @@ fn run_command(config_path: Option<&Path>) -> Result<ExitCode, String> {
         .build()
         .map_err(|error| format!("cannot start the async runtime: {error}"))?;
     runtime.block_on(async {
+        // `build_router` validates the overridden configuration, so a flag that
+        // leaves the hub unable to serve is refused here, not at first call.
         let hub = serve::build_router(&loaded.config, base).await?;
         serve::serve(
             hub,
@@ -387,6 +405,35 @@ fn run_command(config_path: Option<&Path>) -> Result<ExitCode, String> {
         .await
     })?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Transports selectable with `run --transport`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum TransportArg {
+    /// Newline-delimited JSON on stdin and stdout.
+    Stdio,
+    /// Streamable HTTP on `server.http.bind`.
+    Http,
+}
+
+/// Apply the `run` flags over the configuration file. Flags only ever narrow
+/// or relax what the file says for this run; they never write the file.
+fn apply_run_overrides(
+    config: &mut tpt_mcpbox_config::Config,
+    transport: Option<TransportArg>,
+    dry_run: bool,
+) {
+    use tpt_mcpbox_config::model::Transport;
+
+    if let Some(transport) = transport {
+        config.server.transports = vec![match transport {
+            TransportArg::Stdio => Transport::Stdio,
+            TransportArg::Http => Transport::Http,
+        }];
+    }
+    if dry_run {
+        config.policy.dry_run = true;
+    }
 }
 
 /// Write `tpt-mcpbox.1` and one page per subcommand, e.g. `tpt-mcpbox-tools-ls.1`.
@@ -597,6 +644,29 @@ policy:
 
         let err = policy_test_command(&bad, Some(&config)).unwrap_err();
         assert!(err.contains("not a policy input"), "{err}");
+    }
+
+    #[test]
+    fn run_flags_override_the_configuration_for_this_run() {
+        let mut config = tpt_mcpbox_config::Config::default();
+        assert!(!config.policy.dry_run);
+
+        apply_run_overrides(&mut config, Some(TransportArg::Http), true);
+        assert_eq!(
+            config.server.transports,
+            vec![tpt_mcpbox_config::model::Transport::Http]
+        );
+        assert!(config.policy.dry_run);
+
+        // Without flags the file's settings stand.
+        let mut untouched = tpt_mcpbox_config::Config::default();
+        untouched.server.transports = vec![tpt_mcpbox_config::model::Transport::Stdio];
+        apply_run_overrides(&mut untouched, None, false);
+        assert_eq!(
+            untouched.server.transports,
+            vec![tpt_mcpbox_config::model::Transport::Stdio]
+        );
+        assert!(!untouched.policy.dry_run);
     }
 
     #[test]

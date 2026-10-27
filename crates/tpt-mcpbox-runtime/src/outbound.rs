@@ -10,6 +10,7 @@
 //! are applied.
 
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::time::Duration;
 
 use globset::{GlobBuilder, GlobMatcher};
@@ -183,6 +184,43 @@ impl HttpPolicy {
                 tracing::warn!(tool = %self.tool, size, "outbound body over limit");
                 ErrorCode::HttpRequestBodySize(Some(*size))
             }
+        }
+    }
+}
+
+/// `true` when `addr` is a host-internal or non-public destination.
+///
+/// An allowlisted name can still resolve to one of these, which would let a
+/// tool reach services on the machine or its network (including cloud metadata
+/// at `169.254.169.254`). IPv4-mapped IPv6 addresses are judged as IPv4.
+#[must_use]
+// Not called from the connection path yet; see todo.md (Phase 4, SSRF).
+#[allow(dead_code)]
+pub(crate) fn is_internal_address(addr: IpAddr) -> bool {
+    match addr.to_canonical() {
+        IpAddr::V4(v4) => {
+            let [a, b, _, _] = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                // Carrier-grade NAT, 100.64.0.0/10.
+                || (a == 100 && (64..128).contains(&b))
+                // "This network", 0.0.0.0/8.
+                || a == 0
+        }
+        IpAddr::V6(v6) => {
+            let first = v6.segments()[0];
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                // Unique local, fc00::/7.
+                || (first & 0xfe00) == 0xfc00
+                // Link-local, fe80::/10.
+                || (first & 0xffc0) == 0xfe80
         }
     }
 }
@@ -368,6 +406,37 @@ mod tests {
         assert_eq!(declared_length(&headers), Some(42));
         headers.insert("content-length", HeaderValue::from_static("many"));
         assert_eq!(declared_length(&headers), None);
+    }
+
+    #[test]
+    fn internal_addresses_are_classified() {
+        for text in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.9",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "224.0.0.1",
+            "::1",
+            "::",
+            "fc00::1",
+            "fd12:3456::1",
+            "fe80::1",
+            "::ffff:10.0.0.5",
+        ] {
+            let addr: IpAddr = text.parse().unwrap();
+            assert!(is_internal_address(addr), "{text} should be internal");
+        }
+    }
+
+    #[test]
+    fn public_addresses_are_not_classified_as_internal() {
+        for text in ["140.82.112.3", "1.1.1.1", "100.128.0.1", "2606:4700::1111"] {
+            let addr: IpAddr = text.parse().unwrap();
+            assert!(!is_internal_address(addr), "{text} should be public");
+        }
     }
 
     fn default_config() -> OutgoingRequestConfig {

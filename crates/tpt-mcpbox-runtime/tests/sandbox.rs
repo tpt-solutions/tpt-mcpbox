@@ -158,6 +158,57 @@ fn a_read_grant_reaches_its_directory_and_nothing_else() {
 }
 
 #[test]
+fn a_relative_traversal_out_of_the_grant_is_refused() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::create_dir_all(dir.path().join("data")).expect("mkdir");
+    std::fs::write(dir.path().join("secret.txt"), "outside").expect("write");
+
+    let mut cfg = config("fixture");
+    cfg.capabilities.filesystem.read = vec!["data/**".to_owned()];
+    let tool = load(&cfg, dir.path());
+
+    let escape = r#"{"path":"../secret.txt"}"#;
+    assert!(matches!(
+        call(&tool, "read-file", escape),
+        Err(ToolError::ToolFailed { .. })
+    ));
+}
+
+/// A symlink inside a granted directory must not reach its target. Creating a
+/// directory symlink needs a privilege on Windows, so the test is skipped when
+/// the link cannot be made, and says so.
+#[test]
+fn a_symlink_inside_the_grant_cannot_escape_it() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let outside = tempfile::tempdir().expect("outside dir");
+    std::fs::write(outside.path().join("secret.txt"), "outside").expect("write");
+    std::fs::create_dir_all(dir.path().join("data")).expect("mkdir");
+
+    let link = dir.path().join("data/escape");
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(outside.path(), &link);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_dir(outside.path(), &link);
+    if let Err(error) = made {
+        eprintln!("skipping symlink escape test: cannot create symlink ({error})");
+        return;
+    }
+
+    let mut cfg = config("fixture");
+    cfg.capabilities.filesystem.read = vec!["data/**".to_owned()];
+    let tool = load(&cfg, dir.path());
+
+    let through_link = r#"{"path":"data/escape/secret.txt"}"#;
+    assert!(
+        matches!(
+            call(&tool, "read-file", through_link),
+            Err(ToolError::ToolFailed { .. })
+        ),
+        "a symlink must not lead out of the granted directory"
+    );
+}
+
+#[test]
 fn a_read_grant_cannot_write() {
     let dir = tempfile::tempdir().expect("temp dir");
     std::fs::create_dir_all(dir.path().join("data")).expect("mkdir");
