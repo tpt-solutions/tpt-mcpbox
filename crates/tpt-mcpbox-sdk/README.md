@@ -68,3 +68,41 @@ and use HTTPS. A refused request is returned as a tool error, not a panic.
   the same job without a proc-macro crate.
 - Resource and prompt providers are not in the SDK yet; tools only.
 - `tpt-mcpbox init tool <DIR> --sdk-path <PATH>` writes a starter project. The SDK path is required because the SDK is not published.
+
+## Exports
+
+| Item | Purpose |
+|---|---|
+| `Tool` | Trait for one tool: `Args`, `NAME`, `DESCRIPTION` and `run` |
+| `ToolResult` | `text` and `json` build a successful reply |
+| `ToolError` | A failure the agent sees (`isError: true`). `new` builds one from a message. |
+| `export_tools!` | Turns a list of `Tool` types into the component's `describe` and `call` exports |
+| `http::get_json`, `http::post_json`, `http::get_json_with_headers` | HTTP helpers over `wasi:http`. Credentials are never set here: the host injects them. |
+
+## Using the crate
+
+The SDK is a guest crate. It builds for `wasm32-wasip2` with its own lockfile
+and is excluded from the host workspace, so it is not a dependency of the hub.
+A tool project depends on it by path:
+
+```toml
+[dependencies]
+tpt-mcpbox-sdk = { path = "../tpt-mcpbox/crates/tpt-mcpbox-sdk" }
+```
+
+`tpt-mcpbox init tool` writes this line for you.
+
+## Testing
+
+The SDK has no host-side test suite. Build the worked example for the guest
+target and call its tools through the hub:
+
+```sh
+cd crates/tpt-mcpbox-sdk/examples/hello
+cargo build --release --target wasm32-wasip2
+```
+
+## License
+
+Dual licensed under either of [Apache License 2.0](../../LICENSE-APACHE) or
+[MIT License](../../LICENSE-MIT), at your option.

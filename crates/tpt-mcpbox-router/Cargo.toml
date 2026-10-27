@@ -8,8 +8,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-categories.workspace = true
-keywords.workspace = true
+categories = ["network-programming","asynchronous"]
+readme = "README.md"
+keywords = ["mcp","router","rate-limiting","aggregation","graceful-shutdown"]
 
 [lints]
 workspace = true

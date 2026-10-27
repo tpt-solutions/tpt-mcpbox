@@ -8,8 +8,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-categories.workspace = true
-keywords.workspace = true
+categories = ["config","parser-implementations"]
+readme = "README.md"
+keywords = ["config","yaml","secrets","validation","json-schema"]
 
 [lints]
 workspace = true

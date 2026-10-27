@@ -8,8 +8,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-categories.workspace = true
-keywords.workspace = true
+categories = ["authentication","parser-implementations"]
+readme = "README.md"
+keywords = ["policy","rego","authorization","deny-by-default","mcp"]
 
 [lints]
 workspace = true

@@ -8,8 +8,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-categories.workspace = true
-keywords.workspace = true
+categories = ["development-tools::debugging","cryptography"]
+readme = "README.md"
+keywords = ["audit-log","hash-chain","tracing","prometheus","observability"]
 
 [lints]
 workspace = true

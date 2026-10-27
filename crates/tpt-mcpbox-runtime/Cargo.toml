@@ -8,8 +8,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-categories.workspace = true
-keywords.workspace = true
+categories = ["wasm","os"]
+readme = "README.md"
+keywords = ["wasm","wasmtime","wasi","component-model","sandbox"]
 
 [lints]
 workspace = true
