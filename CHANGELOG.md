@@ -26,6 +26,13 @@ Release notes are generated from conventional commits by `release-plz` /
   before the handshake completes) and a dispatcher that shapes JSON-RPC errors
   and correlates server-to-agent `roots` / `sampling` / `elicitation` calls.
 
+- `tpt-mcpbox-cli`: `completions <SHELL>` and `manpage <DIR>` commands.
+- `tpt-mcpbox-router`: each `tools/call` runs in a `request` tracing span with
+  outcome, rule id and duration; `run` honours the `logging` configuration.
+- `docs/security-model.md` and `docs/integration.md`.
+- `fuzz/`: cargo-fuzz targets for the JSON-RPC parser, config loader and policy
+  input, run for 60 s each in CI.
+
 ### Notes
 
 - Crate naming convention fixed at `tpt-mcpbox-<name>`; the binary is

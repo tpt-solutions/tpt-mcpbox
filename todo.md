@@ -9,7 +9,7 @@ Local-first, zero-trust MCP proxy + WebAssembly tool runtime (Rust). See [spec.t
 (`tpt-mcpbox-sdk`, `tpt-mcpbox-tool-github`, `tpt-mcpbox-tool-fs`) live outside
 the host workspace and build for `wasm32-wasip2` with `cargo-component`.
 
-**Last updated:** 2026-10-15 — Phase 0 complete, Phase 1 (protocol core)
+**Last updated:** 2026-10-27 — tracing/logging config, shell completions and man pages, security model and integration docs, fuzz targets and CI jobs added; workspace tests, clippy and fmt pass. Earlier: 2026-10-15 — Phase 0 complete, Phase 1 (protocol core)
 implemented with 109 passing tests; Phase 2 (config & secrets) largely
 implemented with 73 passing config tests (open: SIGHUP, central redaction
 wiring); Phase 3 YAML DSL evaluator landed with 25 passing policy tests (Rego,
@@ -171,31 +171,31 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 
 ## Phase 9 — Observability (`tpt-mcpbox-audit` + runtime hooks)
 
-- [ ] `tracing` setup: JSON + pretty subscribers, `RUST_LOG`/config level, per-request span with tool, decision, duration
+- [x] `tracing` setup: JSON + pretty subscribers, `RUST_LOG`/config level, per-request span with tool, decision, duration — **done:** `run` installs the stderr subscriber from `logging` (`level`, `json`, `spans`), `RUST_LOG` overrides the level. Each `tools/call` runs in a `request` span carrying `kind`, `caller`, `subject`, `outcome`, `rule_id` and `duration_ms`; only names and outcomes go on it, never argument values. Not yet exercised end to end through a live hub.
 - [~] Tamper-evident audit log: append-only, per-entry hash chain (prev-hash), entries for every tool call, policy decision, secret injection (name only), upstream spawn, config reload — **done:** `chain::AuditLog` (JSON lines, SHA-256 chain over canonical data, fsync per append, refuses to extend a broken log) and `chain::verify` (7 tests). **Tool calls are recorded:** `Router::with_audit` writes a `start` entry before dispatch (refusing the call if that write fails) and a `finish` entry with outcome and rule id. Argument values are never recorded, only key names. Startup records: `tool_loaded` (with module digest), `upstream_connected` (transport and counts), and `secret_bound` (names only, with scope and owner). Policy decisions are recorded in each call's `finish` entry. **Open:** config reload (`run` has no hot reload yet), and per-request secret injection records. The `tpt-mcpbox audit verify` command now exists.
-- [ ] Optional signing of audit segments; log rotation; `tpt-mcpbox audit verify` to check chain integrity — **open:** the verifier exists (`audit::verify`) but no CLI command yet. Truncation of the newest entries is not detected without an external head checkpoint.
+- [ ] Optional signing of audit segments; log rotation; `tpt-mcpbox audit verify` to check chain integrity — **open:** signing and rotation (the `audit.sign` and `audit.max_segment_bytes` config keys are parsed but not acted on). The verifier and the `audit verify` command exist. Truncation of the newest entries is not detected without an external head checkpoint.
 - [~] Prometheus `/metrics`: invocation counts, latency histograms, denial counts, pool utilization, upstream health, rate-limit rejections **Done:** `GET /metrics` on `metrics.bind` (loopback only): `tpt_mcpbox_calls_total{kind,outcome}` and `tpt_mcpbox_call_duration_seconds` histograms (router metrics, 45 router tests). Tool names are never labels. Verified with curl; unknown paths return 404 and a non-loopback bind is refused. **Open:** pool utilisation and upstream health gauges, rate-limit rejection counters are covered by the `outcome` label only, and the tracing layer and per-request spans.
 - [ ] Benchmark harness wired to CI with regression thresholds (overhead, cold vs warm)
 
 ## Phase 10 — CLI & Developer Experience (`tpt-mcpbox-cli`)
 
 - [~] `tpt-mcpbox run` (start proxy; `--config`, `--transport`, `--dry-run`) — **done:** `run --config` builds the hub (validation, secrets, policy, audit, Wasm tools, stdio and HTTP upstreams with allow/deny globs) and serves stdio; verified end to end with the test guest and a denied call. Ctrl-C and SIGTERM stop the stdio loop and drain in-flight calls (compiled; not exercised interactively). Stdio and Streamable HTTP (`server.http.bind`) both serve; HTTP binds only to loopback and accepts loopback origins by default, or `allowed_origins`. Verified with curl: initialize, a redacted tool call, and a 403 for a disallowed origin. A second writer on the same audit log is refused by an OS file lock (`<log>.lock`), released even when the process is killed. HTTP authentication: `server.http.bearer_env` names a secret whose value clients must send as `Authorization: Bearer <token>`; the check is constant-time and applies to every bind. A non-loopback bind is refused unless a token is configured. Verified with curl on loopback and on `0.0.0.0`. **Open:** `--transport` and `--dry-run` flags, token rotation without restart, and OAuth or per-client tokens (only one shared bearer token exists).
-- [ ] `tpt-mcpbox validate`, `tpt-mcpbox schema` (emit config JSON Schema)
+- [x] `tpt-mcpbox validate`, `tpt-mcpbox schema` (emit config JSON Schema)
 - [x] `tpt-mcpbox policy test <input.json>` (explain a decision; exits 0 on allow, 1 on deny)
 - [x] `tpt-mcpbox tools ls` / `tpt-mcpbox tools call` (local invocation for debugging; goes through the same policy, limits and audit as `run`)
 - [ ] `tpt-mcpbox pull <oci-ref>` (fetch + verify a tool into cache)
 - [x] `tpt-mcpbox audit verify [PATH] [--config CONFIG]` (defaults to `audit.path` from the configuration; a broken chain or missing file exits non-zero)
 - [x] `tpt-mcpbox init` (scaffold config; refuses to overwrite without `--force`) / `tpt-mcpbox init tool` (scaffold SDK project)
-- [ ] Shell completions + generated man pages
-- [ ] Integration guide: wiring tpt-mcpbox into Claude Code / Claude Desktop `mcpServers`
+- [x] Shell completions + generated man pages — **done:** `tpt-mcpbox completions <SHELL>` (clap_complete) and `tpt-mcpbox manpage <DIR>` (clap_mangen, one `.1` per command path, e.g. `tpt-mcpbox-tools-call.1`). Known cosmetic gap: the `.TH` title of a subcommand page shows its short name (`call`), since clap_mangen takes the title from the command name.
+- [x] Integration guide: wiring tpt-mcpbox into Claude Code / Claude Desktop `mcpServers` — `docs/integration.md` (stdio and Streamable HTTP with bearer token; verify steps). Written from the config model and not yet tried against a live Claude Code session.
 
 ## Phase 11 — Security Hardening & Review
 
-- [ ] `docs/security-model.md`: threat model, trust boundaries, non-goals, residual risks
-- [ ] `cargo-fuzz` targets: JSON-RPC parser, config parser, YAML DSL, WIT/host-call boundary
+- [x] `docs/security-model.md`: threat model, trust boundaries, non-goals, residual risks — residual risks listed as R1–R11 and tied to the open items in this file.
+- [~] `cargo-fuzz` targets: JSON-RPC parser, config parser, YAML DSL, WIT/host-call boundary — **done:** `fuzz/` crate with `jsonrpc_parse`, `config_load` and `policy_input` (the policy target fuzzes the input side of the YAML DSL and Rego evaluation against a fixed policy); all three type-check. A `fuzz` CI job runs each for 60 s. **Open:** the WIT/host-call boundary target. Not run locally: libFuzzer needs nightly and sanitizers, so the first real run is the CI job.
 - [ ] Sandbox-escape test suite: attempt fs/net/env access outside grants, path traversal, symlink escape, oversized alloc, infinite loop, deep recursion
 - [ ] Secret-safety tests: assert secrets absent from logs, errors, audit payloads, panic messages, `/metrics`
-- [ ] Prompt-injection scenario tests: malicious tool args must not bypass policy
+- [~] Prompt-injection scenario tests: malicious tool args must not bypass policy — **started:** `arguments_cannot_impersonate_the_caller_or_tool` (router) shows that argument keys claiming a caller or tool do not change the policy's view. **Open:** path and host traversal through arguments for the Wasm and upstream routes.
 - [ ] Supply chain: `cargo-deny` gates, `cargo-vet` or `cargo-auditable`, SBOM (CycloneDX) in release
 - [ ] Resource-exhaustion / DoS tests for rate limiter and pool
 - [ ] External-style security review pass + checklist sign-off before v0.1.0
