@@ -1,0 +1,45 @@
+# Version bump and changelog, through a release PR.
+#
+# Runs only when a maintainer starts it from the Actions tab. It runs
+# `release-plz release-pr`, which opens or updates a PR that bumps the version
+# and prepends the git-cliff changelog (cliff.toml). Merging that PR is a human
+# decision.
+#
+# Nothing here publishes. There is no `release-plz release` step, and
+# release-plz.toml keeps `publish`, `git_release_enable` and `git_tag_enable`
+# off as a second guard. Crates go to crates.io, and the tag that starts the
+# binary build in release.yml is pushed, only after the v0.1.0 checklist in
+# todo.md is signed off.
+
+name: Release PR
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-pr:
+    name: open or update the release PR
+    runs-on: ubuntu-latest
+    if: ${{ github.ref == 'refs/heads/master' }}
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # release-plz reads the history to build the changelog.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+          config: release-plz.toml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

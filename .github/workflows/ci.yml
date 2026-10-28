@@ -32,6 +32,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+  # One runner per release platform: Linux x86_64, macOS arm64 (macos-latest),
+  # macOS x86_64 (the Intel image) and Windows x86_64.
   test:
     if: github.event_name != 'schedule'
     name: test (${{ matrix.os }})
@@ -39,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -102,6 +104,22 @@ jobs:
           command: check
       - run: cargo install cargo-audit --locked
       - run: cargo audit
+
+  # Release binaries are built with cargo-auditable (dist-workspace.toml), which
+  # embeds the resolved dependency list in the executable. This job builds the
+  # CLI the same way and audits the binary itself, so a shipped binary can be
+  # checked against new advisories later with `cargo audit bin`.
+  auditable:
+    if: github.event_name != 'schedule'
+    name: auditable binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-auditable cargo-audit --locked
+      - run: cargo auditable build --release --locked -p tpt-mcpbox-cli
+      - run: cargo audit bin target/release/tpt-mcpbox
 
   # Guest crates build for wasm32-wasip2 with cargo-component.
   guest:
@@ -178,8 +196,9 @@ jobs:
           path: target/criterion
           if-no-files-found: ignore
 
-  # Software bill of materials for the host workspace, in CycloneDX. The release
-  # job attaches it to the GitHub release once that workflow exists.
+  # Software bill of materials for the host workspace, in CycloneDX. The tag
+  # build in release.yml produces the release SBOM; its `attach` job uploads it
+  # to the GitHub release once that is enabled.
   sbom:
     if: github.event_name != 'schedule'
     name: sbom (CycloneDX)
@@ -196,12 +215,16 @@ jobs:
           path: "**/tpt-mcpbox-sbom.cdx.json"
 
   # The book is built on every change so that a broken include or link fails
-  # the build. Publishing it is a separate decision.
+  # the build, and its YAML and Rego examples are parsed, validated and
+  # compiled. Publishing the book is a separate decision.
   docs:
     if: github.event_name != 'schedule'
-    name: docs (mdbook)
+    name: docs (mdbook + examples)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: cargo install mdbook --locked
       - run: mdbook build
+      - run: cargo test --locked -p tpt-mcpbox-policy --test book_examples

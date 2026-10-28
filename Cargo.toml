@@ -93,6 +93,11 @@ codegen-units = 1
 strip = "symbols"
 panic = "abort"
 
+# The profile `dist` builds release archives with. It is the release profile
+# under a separate name so dist can change it without touching `--release`.
+[profile.dist]
+inherits = "release"
+
 # Cranelift compiles every tool component. Unoptimised, that dominates test time,
 # so the compiler crates are built optimised even in the dev profile.
 [profile.dev.package.cranelift-codegen]
