@@ -168,6 +168,7 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
         }
     }
 
+    let mut upstream_completions = false;
     for upstream in config.upstreams.iter().filter(|u| u.enabled) {
         let connection = connect(upstream, &secrets, &redactor)?;
         let fail = |error: tpt_mcpbox_proxy::UpstreamError| {
@@ -175,6 +176,7 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
         };
 
         let handshake = connection.initialize().await.map_err(fail)?;
+        upstream_completions |= handshake.capabilities.completions.is_some();
         let listed = connection.list_tools().await.map_err(fail)?;
         // Only ask for what the upstream says it has, so a server without
         // resources is not sent a request it would answer with an error.
@@ -267,6 +269,7 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
         router: Arc::new(router),
         redactor,
         http_authorization,
+        upstream_completions,
     })
 }
 
@@ -277,6 +280,8 @@ pub(crate) struct Hub {
     pub(crate) router: Arc<Router>,
     pub(crate) redactor: Arc<Redactor>,
     pub(crate) http_authorization: Option<Arc<SecretString>>,
+    /// Whether any upstream declared `completions` in its handshake.
+    pub(crate) upstream_completions: bool,
 }
 
 /// Serves the hub on every enabled transport, then drains in-flight calls.
@@ -312,15 +317,9 @@ pub(crate) async fn serve(
             let origin_policy = origin_policy(http);
             let authorization = hub.http_authorization.clone();
             let handler = Arc::clone(&handler);
+            let session = session_config(&hub);
             Some(tokio::spawn(async move {
-                serve_http(
-                    listener,
-                    handler,
-                    session_config(),
-                    origin_policy,
-                    authorization,
-                )
-                .await
+                serve_http(listener, handler, session, origin_policy, authorization).await
             }))
         }
         None => None,
@@ -328,7 +327,7 @@ pub(crate) async fn serve(
 
     let stdio_result = if server.has_stdio() {
         tokio::select! {
-            result = stdio::serve(Arc::clone(&handler), session_config(), StdioOptions::default()) => {
+            result = stdio::serve(Arc::clone(&handler), session_config(&hub), StdioOptions::default()) => {
                 result.map_err(|error| format!("stdio transport failed: {error}"))
             }
             () = shutdown_signal() => {
@@ -406,19 +405,24 @@ async fn serve_metrics(
         .map_err(|error| format!("metrics transport failed: {error}"))
 }
 
-/// The identity and capabilities the hub reports in `initialize`.
-fn session_config() -> SessionConfig {
+/// The identity and capabilities the hub reports in `initialize`. An optional
+/// capability is advertised only when the hub can serve it, so an agent never
+/// calls a method that would fail for lack of anything behind it.
+fn session_config(hub: &Hub) -> SessionConfig {
+    let router = &hub.router;
     let capabilities = ServerCapabilities {
         tools: Some(ToolsCapability {
             list_changed: Some(false),
         }),
-        resources: Some(ResourcesCapability {
+        resources: router.serves_resources().then_some(ResourcesCapability {
             subscribe: Some(false),
             list_changed: Some(false),
         }),
-        prompts: Some(PromptsCapability {
+        prompts: router.serves_prompts().then_some(PromptsCapability {
             list_changed: Some(false),
         }),
+        completions: (hub.upstream_completions && router.serves_completion_targets())
+            .then(|| json!({})),
         ..ServerCapabilities::default()
     };
     SessionConfig::new(Implementation::new("tpt-mcpbox", VERSION), capabilities)
@@ -995,6 +999,27 @@ mod tests {
         .unwrap();
         let uris: Vec<_> = visible.iter().map(|r| r.uri.as_str()).collect();
         assert_eq!(uris, ["file:///a.txt"]);
+    }
+
+    #[test]
+    fn an_empty_hub_advertises_only_tools() {
+        let policy = Policy::from_config(&tpt_mcpbox_config::model::PolicyConfig::default())
+            .expect("default policy compiles");
+        let hub = Hub {
+            router: Arc::new(Router::new(
+                Limiter::new([], Limits::default()),
+                Arc::new(policy),
+            )),
+            redactor: Arc::new(Redactor::new()),
+            http_authorization: None,
+            upstream_completions: true,
+        };
+        let capabilities = session_config(&hub).capabilities;
+        assert!(capabilities.tools.is_some());
+        assert!(capabilities.resources.is_none());
+        assert!(capabilities.prompts.is_none());
+        // Completion needs a prompt or template to complete for.
+        assert!(capabilities.completions.is_none());
     }
 }
 
