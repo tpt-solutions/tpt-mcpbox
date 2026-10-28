@@ -86,6 +86,28 @@ Resource templates are hidden whenever `resources` is set, because a template
 can reach URIs the filter would refuse. Resource descriptions cannot be
 overridden.
 
+Responses can be scanned on the way back to the agent. Each rule is a regular
+expression, run in order over tool text, text resources and every string in
+`structuredContent`:
+
+```yaml
+upstreams:
+  - name: kb
+    transport:
+      stdio: { command: kb-server }
+    scan:
+      - name: aws_access_key
+        pattern: "AKIA[0-9A-Z]{16}"   # default action: redact
+      - name: card_number
+        pattern: "\\b(?:\\d[ -]?){13,16}\\b"
+        action: refuse                # the agent gets no part of the response
+```
+
+A `redact` match becomes `[redacted:<name>]`. A `refuse` match fails the call
+with an error that names the rule, and the audit record carries the same rule
+id. The matched text is never logged or returned. Binary resources and
+prompts are not scanned yet.
+
 ## `server`
 
 ```yaml

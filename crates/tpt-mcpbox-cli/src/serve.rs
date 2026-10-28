@@ -41,7 +41,9 @@ use tpt_mcpbox_protocol::tools::Tool;
 use tpt_mcpbox_protocol::transport::http::{HttpOptions, OriginPolicy, StreamableHttpServer};
 use tpt_mcpbox_protocol::transport::stdio::{self, StdioOptions};
 use tpt_mcpbox_proxy::supervise::{Respawn, RestartPolicy, supervise};
-use tpt_mcpbox_proxy::{Client, Connection, HttpClient, PolicyGate, UpstreamOptions};
+use tpt_mcpbox_proxy::{
+    Client, Connection, HttpClient, PolicyGate, ResponseScanner, UpstreamOptions,
+};
 use tpt_mcpbox_router::mcp::ToolHandler;
 use tpt_mcpbox_router::{Exposure, Limiter, Limits, Metrics, Router};
 use tpt_mcpbox_runtime::Runtime;
@@ -202,11 +204,12 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
         };
         let mut tool_names: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
         tool_names.sort();
-        let gate = Arc::new(PolicyGate::new(
-            upstream.name.clone(),
-            connection,
-            Arc::clone(&policy),
-        ));
+        let scanner = ResponseScanner::new(&upstream.scan)
+            .map_err(|error| format!("upstream `{}`: scan rule: {error}", upstream.name))?;
+        let gate = Arc::new(
+            PolicyGate::new(upstream.name.clone(), connection, Arc::clone(&policy))
+                .with_scanner(scanner),
+        );
         if upstream.transport.stdio.is_some() {
             // Only supervised upstreams have an up/down state to report.
             let metrics = router.metrics();
