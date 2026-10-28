@@ -130,6 +130,16 @@ impl HttpPolicy {
                 "only the default https port is allowed".to_owned(),
             ));
         }
+        // `Uri::host` drops userinfo, so `https://user@allowed.test/` would be
+        // judged on its host alone. Credentials in the authority are refused.
+        if uri
+            .authority()
+            .is_some_and(|authority| authority.as_str().contains('@'))
+        {
+            return Err(Refusal::Denied(
+                "userinfo is not allowed in tool request URLs".to_owned(),
+            ));
+        }
         let host = uri
             .host()
             .and_then(normalize_host)
@@ -347,6 +357,15 @@ mod tests {
                 .admit(&uri("https://api.github.com@evil.example/"), None)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn userinfo_in_front_of_an_allowed_host_is_refused() {
+        let policy = policy(&["api.github.com"]);
+        assert!(matches!(
+            policy.admit(&uri("https://evil@api.github.com/"), None),
+            Err(Refusal::Denied(_))
+        ));
     }
 
     #[test]

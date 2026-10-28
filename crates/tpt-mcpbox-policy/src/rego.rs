@@ -13,12 +13,18 @@
 //!
 //! Any evaluation error (a runtime type error, an undefined `allow`) is treated
 //! as a refusal. A broken module therefore fails closed.
+//!
+//! The module sees the same normalised host, path and URIs as the DSL, so a
+//! check written against `api.github.com` or `secret/` cannot be stepped around
+//! with `API.GitHub.com.` or `x/../secret/`. A request whose host, path or URI
+//! cannot be normalised is refused before the module runs.
 
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
 use crate::decision::PolicyInput;
 use crate::error::PolicyError;
+use crate::normalize::{normalize_host, normalize_path, normalize_uri};
 
 /// The query whose boolean value decides a request.
 const ALLOW_QUERY: &str = "data.tpt.mcpbox.allow";
@@ -63,7 +69,8 @@ impl RegoEngine {
     /// Returns `Err` with a message when evaluation fails. Callers must treat
     /// that as a refusal.
     pub(crate) fn allows(&self, input: &PolicyInput) -> Result<bool, String> {
-        let json = serde_json::to_string(input).map_err(|error| error.to_string())?;
+        let input = normalized(input)?;
+        let json = serde_json::to_string(&input).map_err(|error| error.to_string())?;
         let mut engine = self.engine.lock().unwrap_or_else(PoisonError::into_inner);
         engine
             .set_input_json(&json)
@@ -72,4 +79,31 @@ impl RegoEngine {
             .eval_bool_query(ALLOW_QUERY.to_owned(), false)
             .map_err(|error| error.to_string())
     }
+}
+
+/// The input with its host, path and URIs normalised as the DSL sees them.
+///
+/// The offending value is left out of the error, because the reason can reach
+/// logs and the audit trail.
+fn normalized(input: &PolicyInput) -> Result<PolicyInput, String> {
+    let refuse = |field: &str| format!("the request's {field} cannot be normalised");
+    let host = match input.host.as_deref() {
+        Some(host) => Some(normalize_host(host).ok_or_else(|| refuse("host"))?),
+        None => None,
+    };
+    let fs_path = match input.fs_path.as_deref() {
+        Some(path) => Some(normalize_path(path).ok_or_else(|| refuse("path"))?),
+        None => None,
+    };
+    let uris = input
+        .uris
+        .iter()
+        .map(|uri| normalize_uri(uri).ok_or_else(|| refuse("URI")))
+        .collect::<Result<_, _>>()?;
+    Ok(PolicyInput {
+        host,
+        fs_path,
+        uris,
+        ..input.clone()
+    })
 }

@@ -244,6 +244,37 @@ fn traversal_cannot_reach_an_allowed_tree() {
 }
 
 #[test]
+fn an_unnormalisable_path_is_caught_by_a_deny_rule() {
+    let mut deny = rule("deny-secrets", Effect::Deny);
+    deny.paths = vec!["**/.env".to_owned()];
+    let mut allow = rule("allow-reads", Effect::Allow);
+    allow.tool = Some("fs_read".to_owned());
+    let engine = engine(vec![deny, allow]);
+
+    let decision = engine.evaluate(&fs_read("../.env"));
+    assert!(!decision.is_allowed());
+    assert_eq!(decision.rule_id.as_deref(), Some("deny-secrets"));
+    assert!(engine.evaluate(&fs_read("notes.md")).is_allowed());
+    let mut no_path = fs_read("x");
+    no_path.fs_path = None;
+    assert!(engine.evaluate(&no_path).is_allowed());
+}
+
+#[test]
+fn an_unnormalisable_host_is_caught_by_a_deny_rule() {
+    let mut deny = rule("deny-metadata", Effect::Deny);
+    deny.hosts = vec!["169.254.169.254".to_owned()];
+    let mut allow = rule("allow-search", Effect::Allow);
+    allow.tool = Some("github_search".to_owned());
+    let engine = engine(vec![deny, allow]);
+
+    let decision = engine.evaluate(&net("169.254.169.254:80"));
+    assert!(!decision.is_allowed());
+    assert_eq!(decision.rule_id.as_deref(), Some("deny-metadata"));
+    assert!(engine.evaluate(&net("api.github.com")).is_allowed());
+}
+
+#[test]
 fn dotdot_that_stays_inside_the_tree_is_allowed() {
     let mut allow = rule("workspace", Effect::Allow);
     allow.paths = vec!["workspace/**".to_owned()];

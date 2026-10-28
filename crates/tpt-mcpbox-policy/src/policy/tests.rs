@@ -208,6 +208,50 @@ allow if {
 }
 
 #[test]
+fn rego_sees_normalised_hosts_and_paths() {
+    const MODULE: &str = r#"
+package tpt.mcpbox
+
+default allow := false
+
+allow if {
+    input.host == "api.github.com"
+    not startswith(input.fs_path, "secret/")
+}
+"#;
+    let policy = with_rego(vec![], MODULE);
+    let mut input = call("fetch");
+    input.host = Some("API.GitHub.com.".to_owned());
+    input.fs_path = Some("notes/./a.md".to_owned());
+    assert!(policy.evaluate(&input).is_allowed());
+
+    input.fs_path = Some("notes/../secret/key.pem".to_owned());
+    assert!(!policy.evaluate(&input).is_allowed());
+}
+
+#[test]
+fn rego_refuses_a_request_it_cannot_normalise() {
+    const MODULE: &str = r#"
+package tpt.mcpbox
+
+default allow := false
+
+allow if not startswith(input.fs_path, "secret/")
+"#;
+    let policy = with_rego(vec![], MODULE);
+    let mut input = call("fetch");
+    input.fs_path = Some("../secret/key.pem".to_owned());
+    let decision = policy.evaluate(&input);
+    assert!(!decision.is_allowed());
+    assert!(
+        decision.reason.contains("cannot be normalised"),
+        "{}",
+        decision.reason
+    );
+    assert!(!decision.reason.contains("key.pem"));
+}
+
+#[test]
 fn dry_run_reports_a_rego_refusal_as_would_be_deny() {
     let mut config = dsl_only(vec![]);
     config.dry_run = true;

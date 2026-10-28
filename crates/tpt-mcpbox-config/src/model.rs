@@ -612,7 +612,8 @@ pub struct PolicyConfig {
     /// YAML DSL rules, evaluated in order; first match wins.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<Rule>,
-    /// Rego module to evaluate instead of / in addition to the DSL.
+    /// Rego module to evaluate instead of / in addition to the DSL. A relative
+    /// path is resolved against the directory of the configuration file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rego: Option<PathBuf>,
     /// Audit-only mode: log what would be denied without blocking.

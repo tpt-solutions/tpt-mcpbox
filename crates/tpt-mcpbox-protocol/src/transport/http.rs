@@ -84,8 +84,16 @@ fn is_loopback_origin(origin: &str) -> bool {
     if scheme != "http" && scheme != "https" {
         return false;
     }
+    // An IPv6 host is bracketed and contains colons, so it cannot be split off
+    // the port at the first `:`.
+    if let Some(bracketed) = rest.strip_prefix('[') {
+        return match bracketed.split_once(']') {
+            Some((address, port)) => address == "::1" && (port.is_empty() || port.starts_with(':')),
+            None => false,
+        };
+    }
     let host = rest.split(':').next().unwrap_or(rest);
-    matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
+    matches!(host, "localhost" | "127.0.0.1")
 }
 
 /// Transport tuning.
@@ -914,6 +922,10 @@ mod tests {
         assert!(policy.allows(None));
         assert!(policy.allows(Some("http://localhost:3000")));
         assert!(policy.allows(Some("http://127.0.0.1")));
+        assert!(policy.allows(Some("http://[::1]")));
+        assert!(policy.allows(Some("http://[::1]:8080")));
+        assert!(!policy.allows(Some("http://[::2]:8080")));
+        assert!(!policy.allows(Some("http://[::1].evil.example")));
         assert!(!policy.allows(Some("https://evil.example")));
         assert!(!policy.allows(Some("file:///tmp")));
         assert!(OriginPolicy::AllowAny.allows(Some("https://evil.example")));

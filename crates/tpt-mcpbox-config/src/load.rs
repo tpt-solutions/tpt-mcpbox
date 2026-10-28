@@ -151,7 +151,17 @@ pub fn load_str(yaml: &str, origin: &str) -> Result<Config, LoadError> {
 /// Propagates [`LoadError`] from the primary document and from the overlay.
 pub fn load_file(path: impl AsRef<Path>) -> Result<LoadedConfig, LoadError> {
     let path = path.as_ref();
-    let config = read_config(path)?;
+    let mut config = read_config(path)?;
+
+    // The Rego module is part of the policy, so a relative path is found next to
+    // the file that names it. Resolving it against the working directory would
+    // let a `policy.rego` planted wherever the hub is started replace it.
+    if let Some(rego) = &config.policy.rego
+        && rego.is_relative()
+    {
+        let base = path.parent().unwrap_or(Path::new(""));
+        config.policy.rego = Some(base.join(rego));
+    }
 
     let overlay_path = path.with_file_name(LOCAL_CONFIG_FILENAME);
     let (config, overlay) = if overlay_path.is_file() {
@@ -411,6 +421,24 @@ mod tests {
             loaded.config.policy.default,
             Effect::Deny,
             "overlay must not relax policy"
+        );
+    }
+
+    #[test]
+    fn a_relative_rego_path_resolves_against_the_config_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join(DEFAULT_CONFIG_FILENAME),
+            "policy:
+  rego: rules/policy.rego
+",
+        )
+        .expect("write");
+
+        let loaded = load_file(dir.path().join(DEFAULT_CONFIG_FILENAME)).expect("loads");
+        assert_eq!(
+            loaded.config.policy.rego,
+            Some(dir.path().join("rules/policy.rego"))
         );
     }
 

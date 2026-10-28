@@ -58,8 +58,8 @@ struct Context<'a> {
     caller: Option<&'a str>,
     tool: Option<&'a str>,
     arguments: &'a Value,
-    host: Option<&'a str>,
-    fs_path: Option<&'a str>,
+    host: Field<'a>,
+    fs_path: Field<'a>,
     /// `None` marks a URI that could not be normalised. Such a URI is covered
     /// by no allow rule and by every deny rule.
     uris: &'a [Option<String>],
@@ -73,9 +73,40 @@ struct CacheKey<'a> {
     caller: Option<&'a str>,
     tool: Option<&'a str>,
     arguments: &'a Value,
-    host: Option<&'a str>,
-    fs_path: Option<&'a str>,
+    host: Field<'a>,
+    fs_path: Field<'a>,
     uris: &'a [Option<String>],
+}
+
+/// A host or path from the request, after normalisation.
+///
+/// A value that is present but cannot be normalised (a port on a host, a path
+/// that climbs above its root) is kept apart from an absent one: it is covered
+/// by no allow rule and by every deny rule that names the field, so a spelling
+/// the normaliser refuses cannot be used to step around a deny.
+#[derive(Debug, Clone, Copy, Serialize)]
+enum Field<'a> {
+    Absent,
+    Invalid,
+    Valid(&'a str),
+}
+
+impl<'a> Field<'a> {
+    fn of(normalized: &'a Option<Option<String>>) -> Self {
+        match normalized {
+            None => Self::Absent,
+            Some(None) => Self::Invalid,
+            Some(Some(value)) => Self::Valid(value),
+        }
+    }
+
+    fn covered_by(self, effect: Effect, globs: &[GlobMatcher]) -> bool {
+        match self {
+            Self::Absent => false,
+            Self::Invalid => effect == Effect::Deny,
+            Self::Valid(value) => globs.iter().any(|glob| glob.is_match(value)),
+        }
+    }
 }
 
 /// What the DSL said about one request.
@@ -221,8 +252,8 @@ impl Engine {
     /// Outcomes are cached on the normalised input, except outcomes that touched
     /// a quota: those depend on the budget at the time of the call.
     pub(crate) fn outcome(&self, input: &PolicyInput, now: Instant) -> DslOutcome {
-        let host = input.host.as_deref().and_then(normalize_host);
-        let fs_path = input.fs_path.as_deref().and_then(normalize_path);
+        let host = input.host.as_deref().map(normalize_host);
+        let fs_path = input.fs_path.as_deref().map(normalize_path);
         let uris: Vec<Option<String>> = input.uris.iter().map(|uri| normalize_uri(uri)).collect();
 
         let key = serde_json::to_string(&CacheKey {
@@ -230,8 +261,8 @@ impl Engine {
             caller: input.caller.as_deref(),
             tool: input.tool.as_deref(),
             arguments: &input.arguments,
-            host: host.as_deref(),
-            fs_path: fs_path.as_deref(),
+            host: Field::of(&host),
+            fs_path: Field::of(&fs_path),
             uris: &uris,
         })
         // Serialising plain strings and JSON values cannot fail.
@@ -251,8 +282,8 @@ impl Engine {
             caller: input.caller.as_deref(),
             tool: input.tool.as_deref(),
             arguments: &input.arguments,
-            host: host.as_deref(),
-            fs_path: fs_path.as_deref(),
+            host: Field::of(&host),
+            fs_path: Field::of(&fs_path),
             uris: &uris,
         };
 
@@ -465,17 +496,11 @@ fn matches(rule: &CompiledRule, ctx: &Context<'_>) -> bool {
             return false;
         }
     }
-    if !rule.hosts.is_empty() {
-        match ctx.host {
-            Some(host) if rule.hosts.iter().any(|g| g.is_match(host)) => {}
-            _ => return false,
-        }
+    if !rule.hosts.is_empty() && !ctx.host.covered_by(rule.effect, &rule.hosts) {
+        return false;
     }
-    if !rule.paths.is_empty() {
-        match ctx.fs_path {
-            Some(path) if rule.paths.iter().any(|g| g.is_match(path)) => {}
-            _ => return false,
-        }
+    if !rule.paths.is_empty() && !ctx.fs_path.covered_by(rule.effect, &rule.paths) {
+        return false;
     }
     if !rule.uris.is_empty() && !uris_match(rule, ctx.uris) {
         return false;
