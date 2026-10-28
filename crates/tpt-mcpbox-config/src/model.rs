@@ -273,6 +273,15 @@ pub struct RateLimit {
     /// Maximum simultaneous calls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrency: Option<u32>,
+    /// How long a call may wait for a busy tool or client before it is
+    /// refused, e.g. `"500ms"`. Unset refuses at once.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "duration_option"
+    )]
+    #[schemars(with = "String")]
+    pub queue_timeout: Option<Duration>,
 }
 
 impl RateLimit {
