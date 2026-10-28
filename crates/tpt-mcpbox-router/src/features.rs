@@ -403,6 +403,7 @@ mod tests {
             description: None,
             effect,
             tool: None,
+            prompt: None,
             method: Some(method.to_owned()),
             args: std::collections::BTreeMap::new(),
             hosts: Vec::new(),

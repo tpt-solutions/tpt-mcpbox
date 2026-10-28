@@ -44,6 +44,7 @@ fn rule(id: &str, effect: Effect) -> Rule {
         description: None,
         effect,
         tool: None,
+        prompt: None,
         method: None,
         args: BTreeMap::new(),
         hosts: Vec::new(),
@@ -324,11 +325,13 @@ fn reload_keeps_quota_counters_for_surviving_rules() {
     let policy = Policy::from_config(&config).expect("policy compiles");
     let base = Instant::now();
 
-    assert!(policy.evaluate_at(&call("search"), base).is_allowed());
+    assert!(policy.evaluate_at(&call("search"), base, true).is_allowed());
 
     let reloaded = policy.reload(&config).expect("reload compiles");
     assert!(
-        !reloaded.evaluate_at(&call("search"), base).is_allowed(),
+        !reloaded
+            .evaluate_at(&call("search"), base, true)
+            .is_allowed(),
         "a reload must not reset the budget"
     );
 }
@@ -345,7 +348,7 @@ fn reload_drops_counters_of_removed_rules() {
     });
     let policy = Policy::from_config(&dsl_only(vec![quota])).expect("policy compiles");
     let base = Instant::now();
-    assert!(policy.evaluate_at(&call("search"), base).is_allowed());
+    assert!(policy.evaluate_at(&call("search"), base, true).is_allowed());
 
     let reloaded = policy
         .reload(&dsl_only(vec![tool_rule("other", Effect::Allow, "search")]))

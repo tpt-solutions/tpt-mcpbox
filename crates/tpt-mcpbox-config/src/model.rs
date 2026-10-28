@@ -233,6 +233,11 @@ pub struct SecretBinding {
     /// `Authorization: Bearer <token>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix: Option<String>,
+    /// Host globs the header may be sent to, e.g. `api.github.com`. Empty means
+    /// every host the tool may reach. Set this for any credential: a tool that
+    /// can reach two hosts should not send a token to both (SR-08).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
 }
 
 /// Per-invocation resource limits.
@@ -538,6 +543,9 @@ pub struct Rule {
     /// Tool name glob this rule matches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
+    /// Prompt name glob this rule matches, for `prompts/get`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
     /// MCP method this rule matches, e.g. `tools/call`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,

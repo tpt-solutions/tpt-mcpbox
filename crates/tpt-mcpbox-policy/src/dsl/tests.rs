@@ -11,6 +11,7 @@ fn rule(id: &str, effect: Effect) -> Rule {
         description: None,
         effect,
         tool: None,
+        prompt: None,
         method: None,
         args: BTreeMap::new(),
         hosts: Vec::new(),
@@ -88,6 +89,24 @@ fn first_matching_rule_wins() {
     let decision = engine.evaluate(&call("fs_read"));
     assert!(decision.is_allowed());
     assert_eq!(decision.rule_id.as_deref(), Some("allow-all"));
+}
+
+#[test]
+fn prompt_rules_match_the_prompt_name_and_never_a_tool_name() {
+    let mut allow = rule("allow-summaries", Effect::Allow);
+    allow.method = Some("prompts/get".to_owned());
+    allow.prompt = Some("summar*".to_owned());
+    let engine = engine(vec![allow]);
+
+    let prompt = |name: &str| PolicyInput {
+        method: "prompts/get".to_owned(),
+        prompt: Some(name.to_owned()),
+        ..PolicyInput::default()
+    };
+    assert!(engine.evaluate(&prompt("summarise")).is_allowed());
+    assert!(!engine.evaluate(&prompt("delete_all")).is_allowed());
+    // A tool named like the prompt is not a prompt.
+    assert!(!engine.evaluate(&call("summarise")).is_allowed());
 }
 
 #[test]

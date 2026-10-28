@@ -189,8 +189,18 @@ impl AuditLog {
 
         let mut line = serde_json::to_string(&entry)?;
         line.push('\n');
-        head.file.write_all(line.as_bytes())?;
-        head.file.sync_data()?;
+        let before = head.file.metadata()?.len();
+        if let Err(error) = head
+            .file
+            .write_all(line.as_bytes())
+            .and_then(|()| head.file.sync_data())
+        {
+            // Cut off whatever part of the line reached the file. Otherwise the
+            // next start reads a torn entry and refuses the whole log (SR-20).
+            // The head was not advanced, so the chain is unchanged.
+            let _ = head.file.set_len(before);
+            return Err(error.into());
+        }
 
         head.next_seq += 1;
         head.prev = hash;

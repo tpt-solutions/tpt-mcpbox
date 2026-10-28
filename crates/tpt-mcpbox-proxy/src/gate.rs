@@ -163,7 +163,21 @@ impl PolicyGate {
         tool: &str,
         arguments: Option<Map<String, Value>>,
     ) -> Result<CallToolResult, ProxyError> {
-        let decision = self.check_tool_call(caller, tool, arguments.as_ref());
+        self.call_tool_as(caller, tool, tool, arguments).await
+    }
+
+    /// Like [`PolicyGate::call_tool`], for a tool the agent calls under a
+    /// different name. The policy sees `exposed`, the name the agent used, so
+    /// two upstreams with the same tool name cannot share an allow rule. The
+    /// upstream still receives `tool`, its own name.
+    pub async fn call_tool_as(
+        &self,
+        caller: &str,
+        exposed: &str,
+        tool: &str,
+        arguments: Option<Map<String, Value>>,
+    ) -> Result<CallToolResult, ProxyError> {
+        let decision = self.check_tool_call(caller, exposed, arguments.as_ref());
         if !decision.is_allowed() {
             tracing::info!(
                 upstream = %self.upstream,
@@ -216,6 +230,7 @@ impl PolicyGate {
         let input = PolicyInput {
             method: "prompts/get".to_owned(),
             caller: Some(caller.to_owned()),
+            prompt: Some(name.to_owned()),
             arguments: arguments
                 .as_ref()
                 .map_or(Value::Null, |a| Value::Object(a.clone())),
@@ -311,6 +326,7 @@ mod gate_tests {
             description: None,
             effect,
             tool: Some(tool.to_owned()),
+            prompt: None,
             method: None,
             args: BTreeMap::new(),
             hosts: Vec::new(),
@@ -523,6 +539,7 @@ mod feature_gate_tests {
             description: None,
             effect: Effect::Allow,
             tool: None,
+            prompt: None,
             method: Some("resources/read".to_owned()),
             args: BTreeMap::new(),
             hosts: Vec::new(),

@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use wasmtime::component::Linker;
 use wasmtime::{
-    Config, Engine, InstanceAllocationStrategy, PoolingAllocationConfig, Store, StoreLimits,
-    StoreLimitsBuilder, UpdateDeadline,
+    Config, Engine, InstanceAllocationStrategy, PoolingAllocationConfig, ResourceLimiter, Store,
+    StoreLimits, StoreLimitsBuilder, UpdateDeadline,
 };
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView};
 use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpCtxView, WasiHttpView};
@@ -70,7 +70,7 @@ pub(crate) struct HostState {
     pub(crate) wasi: WasiCtx,
     pub(crate) http: WasiHttpCtx,
     pub(crate) table: ResourceTable,
-    pub(crate) limits: StoreLimits,
+    pub(crate) limits: MemoryBudget,
     pub(crate) hooks: PolicyHooks,
     pub(crate) control: Arc<CallControl>,
 }
@@ -141,7 +141,9 @@ impl Runtime {
         wasmtime_wasi_http::p2::add_only_http_to_linker_sync(&mut linker)
             .map_err(|e| engine_error(&e))?;
 
-        let ticker = Ticker::start(engine.clone());
+        // Without the ticker no deadline ever fires, so a failed spawn must
+        // stop the runtime from starting rather than leave guests unbounded.
+        let ticker = Ticker::start(engine.clone())?;
         Ok(Self {
             shared: Arc::new(Shared {
                 engine,
@@ -173,13 +175,69 @@ impl Runtime {
     }
 
     /// Store limits for a tool with the given memory ceiling.
-    pub(crate) fn limits(memory_bytes: usize) -> StoreLimits {
-        StoreLimitsBuilder::new()
-            .memory_size(memory_bytes)
-            .instances(16)
-            .tables(16)
-            .memories(4)
-            .build()
+    pub(crate) fn limits(memory_bytes: usize) -> MemoryBudget {
+        MemoryBudget {
+            // Memory is budgeted below, so the per-memory size cap is not set.
+            inner: StoreLimitsBuilder::new()
+                .instances(16)
+                .tables(16)
+                .memories(4)
+                .build(),
+            budget: memory_bytes,
+            in_use: 0,
+        }
+    }
+}
+
+/// Caps the linear memory of one store in total. `StoreLimits` caps each
+/// memory separately, so a guest with four memories could reach four times its
+/// limit (SR-09). Wasm memories never shrink, so the sum of growth is the sum
+/// of the sizes in use.
+pub(crate) struct MemoryBudget {
+    inner: StoreLimits,
+    budget: usize,
+    in_use: usize,
+}
+
+impl ResourceLimiter for MemoryBudget {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        if maximum.is_some_and(|max| desired > max) {
+            return Ok(false);
+        }
+        let growth = desired.saturating_sub(current);
+        // A refused growth that later fails for another reason leaves the
+        // count too high. That only makes later growth stricter, never looser.
+        if self.in_use.saturating_add(growth) > self.budget {
+            return Ok(false);
+        }
+        self.in_use += growth;
+        Ok(true)
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        self.inner.table_growing(current, desired, maximum)
+    }
+
+    fn instances(&self) -> usize {
+        self.inner.instances()
+    }
+
+    fn tables(&self) -> usize {
+        self.inner.tables()
+    }
+
+    fn memories(&self) -> usize {
+        self.inner.memories()
     }
 }
 
@@ -191,7 +249,7 @@ struct Ticker {
 }
 
 impl Ticker {
-    fn start(engine: Engine) -> Self {
+    fn start(engine: Engine) -> Result<Self, ToolError> {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
@@ -202,8 +260,14 @@ impl Ticker {
                     engine.increment_epoch();
                 }
             })
-            .ok();
-        Self { stop, thread }
+            .map_err(|error| ToolError::Compile {
+                tool: "<runtime>".to_owned(),
+                message: format!("cannot start the epoch ticker: {error}"),
+            })?;
+        Ok(Self {
+            stop,
+            thread: Some(thread),
+        })
     }
 }
 
@@ -220,5 +284,39 @@ fn engine_error(error: &wasmtime::Error) -> ToolError {
     ToolError::Compile {
         tool: "<runtime>".to_owned(),
         message: format!("{error:#}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wasmtime::ResourceLimiter;
+
+    use super::*;
+
+    const PAGE: usize = 64 * 1024;
+
+    #[test]
+    fn memories_share_one_budget() {
+        let mut limits = Runtime::limits(4 * PAGE);
+        // Two memories of two pages each fill the budget exactly.
+        assert!(limits.memory_growing(0, 2 * PAGE, None).unwrap());
+        assert!(limits.memory_growing(0, 2 * PAGE, None).unwrap());
+        // A third memory, or any growth, is refused.
+        assert!(!limits.memory_growing(0, PAGE, None).unwrap());
+        assert!(!limits.memory_growing(2 * PAGE, 3 * PAGE, None).unwrap());
+    }
+
+    #[test]
+    fn growth_counts_only_the_increase() {
+        let mut limits = Runtime::limits(3 * PAGE);
+        assert!(limits.memory_growing(0, PAGE, None).unwrap());
+        assert!(limits.memory_growing(PAGE, 3 * PAGE, None).unwrap());
+        assert!(!limits.memory_growing(3 * PAGE, 4 * PAGE, None).unwrap());
+    }
+
+    #[test]
+    fn a_declared_maximum_is_still_enforced() {
+        let mut limits = Runtime::limits(16 * PAGE);
+        assert!(!limits.memory_growing(0, 2 * PAGE, Some(PAGE)).unwrap());
     }
 }

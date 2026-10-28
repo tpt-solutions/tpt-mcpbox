@@ -507,6 +507,7 @@ fn a_missing_secret_fails_the_load() {
         env: "TPT_TEST_SECRET_THAT_IS_NOT_SET".to_owned(),
         header: "Authorization".to_owned(),
         prefix: Some("Bearer".to_owned()),
+        hosts: Vec::new(),
     }];
     assert!(matches!(
         runtime().load_tool(&cfg, &SecretStore::new(), dir.path()),

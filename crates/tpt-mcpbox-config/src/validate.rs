@@ -614,6 +614,15 @@ fn validate_policy(config: &Config, mode: ValidationMode, report: &mut Validatio
                 "rule ids are recorded in audit entries and must be unique",
             ));
         }
+        // The router does not yet give the policy a call's host or path, so a
+        // deny rule on them never matches (SR-01). Say so rather than let an
+        // operator rely on it.
+        if rule.effect == Effect::Deny && (!rule.hosts.is_empty() || !rule.paths.is_empty()) {
+            report.diagnostics.push(Diagnostic::warning(
+                &path,
+                "`hosts` and `paths` on a deny rule are not enforced yet; the policy is not given the call's host or path",
+            ));
+        }
         if let Some(constraints) = &rule.constraints {
             if rule.effect == Effect::Deny {
                 report.diagnostics.push(Diagnostic::error_with_hint(
@@ -883,6 +892,22 @@ policy:
     fn allow_by_default_is_refused_when_serving() {
         let config = parse("policy:\n  default: allow\n");
         assert!(errors(&config)[0].contains("every unmatched call is permitted"));
+    }
+
+    #[test]
+    fn deny_rules_on_hosts_or_paths_draw_a_warning() {
+        let config = parse(
+            "policy:
+  rules:
+    - id: deny-env
+      effect: deny
+      paths: [\"**/.env\"]
+",
+        );
+        let report = validate(&config, ValidationMode::Serve);
+        let warnings = report.of_severity(Severity::Warning);
+        assert_eq!(warnings.len(), 1, "{report}");
+        assert_eq!(warnings[0].path, "policy.rules[0]");
     }
 
     #[test]

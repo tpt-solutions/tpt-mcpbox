@@ -189,17 +189,14 @@ fn read_config(path: &Path) -> Result<Config, LoadError> {
 
 /// Merge an overlay into a primary document.
 ///
-/// Only additive sections come from the overlay (`tools`, `upstreams`, and the
-/// server transport list). `policy`, `audit`, `metrics` and `logging` stay with
-/// the primary document so a local file cannot relax enforcement.
+/// Only `tools` and `upstreams` come from the overlay. Everything else stays
+/// with the primary document: `server` (so a local file cannot open a network
+/// listener, SR-23), `policy`, `audit`, `metrics` and `logging` (so it cannot
+/// relax enforcement).
 #[must_use]
 pub fn merge(primary: Config, overlay: Config) -> Config {
     let mut merged = primary;
     merged.version = merged.version.or(overlay.version);
-    merged.server.transports.extend(overlay.server.transports);
-    if merged.server.http.is_none() {
-        merged.server.http = overlay.server.http;
-    }
     for tool in overlay.tools {
         if !merged
             .tools
@@ -392,6 +389,35 @@ mod tests {
         let cwd = tempfile::tempdir().expect("tempdir");
         let error = discover(None, &env_of(&[]), cwd.path()).expect_err("not found");
         assert!(error.to_string().contains("--config"));
+    }
+
+    #[test]
+    fn overlays_cannot_open_a_listener() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join(DEFAULT_CONFIG_FILENAME),
+            "server:
+  transports: [stdio]
+",
+        )
+        .expect("write");
+        std::fs::write(
+            dir.path().join(LOCAL_CONFIG_FILENAME),
+            "server:
+  transports: [stdio, http]
+  http:
+    bind: 0.0.0.0:8080
+",
+        )
+        .expect("write");
+
+        let loaded = load_file(dir.path().join(DEFAULT_CONFIG_FILENAME)).expect("loads");
+        assert!(loaded.overlay.is_some());
+        assert_eq!(
+            loaded.config.server.transports,
+            vec![crate::model::Transport::Stdio]
+        );
+        assert!(loaded.config.server.http.is_none());
     }
 
     #[test]

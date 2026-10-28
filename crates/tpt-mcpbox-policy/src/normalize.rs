@@ -35,7 +35,23 @@ pub fn normalize_host(raw: &str) -> Option<String> {
     if !host.chars().all(allowed) || host.starts_with('.') || host.contains("..") {
         return None;
     }
+    // A host whose last label is numeric is an IPv4 address to resolvers, in
+    // decimal, hex or short forms (`2130706433`, `0x7f.1`, `127.1`). Only the
+    // canonical dotted quad is accepted; anything else is refused, not guessed.
+    if last_label_is_numeric(&host) && host.parse::<std::net::Ipv4Addr>().is_err() {
+        return None;
+    }
     Some(host)
+}
+
+/// True when the final label of `host` is decimal digits or a `0x` hex number.
+fn last_label_is_numeric(host: &str) -> bool {
+    let last = host.rsplit('.').next().unwrap_or(host);
+    let is_decimal = !last.is_empty() && last.bytes().all(|b| b.is_ascii_digit());
+    let is_hex = last
+        .strip_prefix("0x")
+        .is_some_and(|digits| digits.bytes().all(|b| b.is_ascii_hexdigit()));
+    is_decimal || is_hex
 }
 
 /// Normalise a filesystem path for glob matching.
@@ -227,6 +243,22 @@ mod tests {
         assert_eq!(
             normalize_host("API.GitHub.com.").as_deref(),
             Some("api.github.com")
+        );
+    }
+
+    #[test]
+    fn numeric_ipv4_spellings_are_refused_but_the_dotted_quad_is_kept() {
+        for bad in ["2130706433", "127.1", "0x7f.1", "0x7f000001", "127.0.0.256"] {
+            assert_eq!(normalize_host(bad), None, "{bad} should be refused");
+        }
+        assert_eq!(normalize_host("127.0.0.1").as_deref(), Some("127.0.0.1"));
+        assert_eq!(
+            normalize_host("10.20.30.40").as_deref(),
+            Some("10.20.30.40")
+        );
+        assert_eq!(
+            normalize_host("api.v2.example").as_deref(),
+            Some("api.v2.example")
         );
     }
 

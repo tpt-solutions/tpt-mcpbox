@@ -85,6 +85,7 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
             env,
             header: "Authorization".to_owned(),
             prefix: Some("Bearer".to_owned()),
+            hosts: Vec::new(),
         });
     let bindings: Vec<_> = config
         .tools

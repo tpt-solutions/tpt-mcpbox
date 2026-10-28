@@ -43,6 +43,7 @@ tools:
       - env: GITHUB_TOKEN           # name of the variable the hub reads
         header: Authorization       # outbound header it is injected into
         prefix: Bearer              # optional prefix on the header value
+        hosts: ["api.github.com"]   # hosts it may be sent to; set this for credentials
     limits:
       max_concurrent_calls: 4
       max_argument_bytes: 65536
@@ -80,8 +81,10 @@ upstreams:
       deny: ["secret://*"]         # by URI; also hides resource templates
 ```
 
-Renames apply before the prefix. Policy rules match the upstream's own name,
-and so does the upstream, so a rename does not change what a rule must allow.
+Renames apply before the prefix. Policy rules match the name the agent calls,
+so an allow for the upstream's tool is written as `kb__find`, not `search_docs`.
+The upstream itself is still called by its own name, and two upstreams that
+expose the same tool name can be allowed separately.
 Resource templates are hidden whenever `resources` is set, because a template
 can reach URIs the filter would refuse. Resource descriptions cannot be
 overridden.

@@ -21,6 +21,9 @@ pub struct PolicyInput {
     /// Tool name for `tools/call`, taken from `params.name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
+    /// Prompt name for `prompts/get`, as the upstream knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
     /// Tool arguments, i.e. `params.arguments`. `null` when absent.
     #[serde(default)]
     pub arguments: serde_json::Value,

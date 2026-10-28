@@ -297,6 +297,45 @@ impl SecretStore {
         }
         Ok(headers)
     }
+
+    /// Resolves each binding on its own, keeping its host scope. Unlike
+    /// [`SecretStore::headers_for`], two bindings for one header name both stay.
+    ///
+    /// # Errors
+    /// Returns [`MissingSecret`] for any binding whose secret is absent.
+    pub fn resolve(
+        &self,
+        bindings: &[SecretBinding],
+    ) -> Result<Vec<ResolvedHeader>, MissingSecret> {
+        bindings
+            .iter()
+            .map(|binding| {
+                let secret = self.get(&binding.env).ok_or_else(|| MissingSecret {
+                    name: binding.env.clone(),
+                })?;
+                let value = match &binding.prefix {
+                    Some(prefix) => format!("{} {}", prefix, secret.expose()),
+                    None => secret.expose().to_owned(),
+                };
+                Ok(ResolvedHeader {
+                    name: binding.header.clone(),
+                    value: SecretString::new(value),
+                    hosts: binding.hosts.clone(),
+                })
+            })
+            .collect()
+    }
+}
+
+/// A secret binding resolved to the header it sets.
+#[derive(Debug)]
+pub struct ResolvedHeader {
+    /// Header name to set, e.g. `Authorization`.
+    pub name: String,
+    /// Full header value, prefix included.
+    pub value: SecretString,
+    /// Host globs the header may go to. Empty means every host the tool may reach.
+    pub hosts: Vec<String>,
 }
 
 /// A binding referenced a secret that the store does not hold.
@@ -432,6 +471,7 @@ mod tests {
             env: env.to_owned(),
             header: header.to_owned(),
             prefix: prefix.map(str::to_owned),
+            hosts: Vec::new(),
         }
     }
 

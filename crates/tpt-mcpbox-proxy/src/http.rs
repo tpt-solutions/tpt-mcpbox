@@ -37,6 +37,11 @@ use crate::upstream::{UpstreamError, UpstreamOptions};
 const SESSION_HEADER: &str = "mcp-session-id";
 const PROTOCOL_HEADER: &str = "mcp-protocol-version";
 
+/// Largest reply body, and largest unparsed SSE data, read from an upstream.
+/// A reply over this is refused, so a hostile server cannot exhaust memory
+/// within the request timeout (SR-15).
+pub const MAX_REPLY_BYTES: usize = 16 * 1024 * 1024;
+
 type Http = HyperClient<HttpsConnector<HttpConnector>, Full<Bytes>>;
 
 /// MCP client for a Streamable HTTP endpoint.
@@ -85,8 +90,11 @@ impl HttpClient {
             .map(|(name, value)| {
                 let name = HeaderName::from_bytes(name.as_bytes())
                     .map_err(|e| UpstreamError::Unsupported(format!("header `{name}`: {e}")))?;
-                let value = HeaderValue::from_str(value)
+                let mut value = HeaderValue::from_str(value)
                     .map_err(|e| UpstreamError::Unsupported(format!("header `{name}`: {e}")))?;
+                // Configured headers often carry credentials. Keep them out of
+                // hyper's debug output and transport logging (SR-26).
+                value.set_sensitive(true);
                 Ok((name, value))
             })
             .collect::<Result<Vec<_>, UpstreamError>>()?;
@@ -168,16 +176,32 @@ impl HttpClient {
         if is_sse {
             read_sse_response(body, id).await
         } else {
-            let bytes = body
-                .collect()
-                .await
-                .map_err(|e| UpstreamError::Transport(e.to_string()))?
-                .to_bytes();
+            let bytes = read_capped(body).await?;
             let response: Response = serde_json::from_slice(&bytes)
                 .map_err(|e| UpstreamError::Malformed(e.to_string()))?;
             Ok(response)
         }
     }
+}
+
+/// Reads a whole reply body, refusing it once it passes [`MAX_REPLY_BYTES`].
+async fn read_capped(mut body: Incoming) -> Result<Vec<u8>, UpstreamError> {
+    let mut bytes = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|e| UpstreamError::Transport(e.to_string()))?;
+        let Ok(chunk) = frame.into_data() else {
+            continue;
+        };
+        if bytes.len() + chunk.len() > MAX_REPLY_BYTES {
+            return Err(too_large());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn too_large() -> UpstreamError {
+    UpstreamError::Transport(format!("reply is larger than {MAX_REPLY_BYTES} bytes"))
 }
 
 /// Builds one `POST` to the endpoint with the configured headers and, when
@@ -341,6 +365,10 @@ async fn read_sse_response(mut body: Incoming, id: &Id) -> Result<Response, Upst
             continue;
         };
         buffer.extend_from_slice(&chunk);
+        // A line with no newline yet, or data not yet delivered, is bounded too.
+        if buffer.len() > MAX_REPLY_BYTES || data.len() > MAX_REPLY_BYTES {
+            return Err(too_large());
+        }
 
         while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
             let line_bytes: Vec<u8> = buffer.drain(..=pos).collect();
@@ -408,6 +436,10 @@ mod tests {
         Json,
         Sse,
         Silent,
+        /// `tools/call` answers with a body over the reply limit.
+        Oversized,
+        /// `tools/call` streams an SSE event over the reply limit, with no end.
+        OversizedSse,
     }
 
     async fn serve(mode: Mode) -> String {
@@ -453,6 +485,20 @@ mod tests {
             }
 
             let mut builder = AxumResponse::builder().header("mcp-session-id", "sess-1");
+            if method == "tools/call" && matches!(mode, Mode::Oversized) {
+                let pad = "a".repeat(MAX_REPLY_BYTES);
+                return AxumResponse::builder()
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!("{{\"pad\":\"{pad}\"}}")))
+                    .unwrap();
+            }
+            if method == "tools/call" && matches!(mode, Mode::OversizedSse) {
+                let pad = "a".repeat(MAX_REPLY_BYTES);
+                return AxumResponse::builder()
+                    .header(header::CONTENT_TYPE, "text/event-stream")
+                    .body(Body::from(format!("data: {pad}")))
+                    .unwrap();
+            }
             let body = if method == "tools/call" && matches!(mode, Mode::Sse) {
                 builder = builder.header(header::CONTENT_TYPE, "text/event-stream");
                 // A server message arrives first and must be skipped.
@@ -567,6 +613,28 @@ mod tests {
         assert!(matches!(
             client.call_tool("echo", None).await,
             Err(UpstreamError::Timeout { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn oversized_json_reply_is_refused() {
+        let url = serve(Mode::Oversized).await;
+        let client = client(&url, UpstreamOptions::default());
+        client.initialize().await.unwrap();
+        assert!(matches!(
+            client.call_tool("echo", None).await,
+            Err(UpstreamError::Transport(message)) if message.contains("larger than")
+        ));
+    }
+
+    #[tokio::test]
+    async fn oversized_sse_event_is_refused() {
+        let url = serve(Mode::OversizedSse).await;
+        let client = client(&url, UpstreamOptions::default());
+        client.initialize().await.unwrap();
+        assert!(matches!(
+            client.call_tool("echo", None).await,
+            Err(UpstreamError::Transport(message)) if message.contains("larger than")
         ));
     }
 

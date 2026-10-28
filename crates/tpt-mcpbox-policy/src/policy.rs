@@ -91,14 +91,23 @@ impl Policy {
     /// Evaluate one request.
     #[must_use]
     pub fn evaluate(&self, input: &PolicyInput) -> Decision {
-        self.evaluate_at(input, Instant::now())
+        self.evaluate_at(input, Instant::now(), true)
+    }
+
+    /// Like [`Policy::evaluate`], but a quota is not spent. Use it to re-check a
+    /// request that an earlier `evaluate` already admitted, such as each
+    /// outbound network request of a tool call, so that one call is counted
+    /// once against its quota.
+    #[must_use]
+    pub fn evaluate_recheck(&self, input: &PolicyInput) -> Decision {
+        self.evaluate_at(input, Instant::now(), false)
     }
 
     /// Evaluate one request as of `now`. Exists so quota windows can be tested
-    /// without sleeping.
-    pub(crate) fn evaluate_at(&self, input: &PolicyInput, now: Instant) -> Decision {
+    /// without sleeping. `charge` says whether a matched quota is spent.
+    pub(crate) fn evaluate_at(&self, input: &PolicyInput, now: Instant, charge: bool) -> Decision {
         let mut opinions = Vec::with_capacity(2);
-        if let DslOutcome::Matched(verdict) = self.dsl.outcome(input, now) {
+        if let DslOutcome::Matched(verdict) = self.dsl.outcome(input, now, charge) {
             opinions.push(Opinion {
                 effect: verdict.effect,
                 rule_id: Some(verdict.rule_id),

@@ -150,7 +150,8 @@ impl Limiter {
 
     /// Like [`Limiter::acquire`], with the clock supplied by the caller.
     pub fn acquire_at(&self, tool: &str, client: &str, now: Instant) -> Result<Permit, Rejection> {
-        let tool_permit = match self.tools.get(tool) {
+        let tool_gate = self.tools.get(tool);
+        let tool_permit = match tool_gate {
             Some(gate) => gate.admit(now).map_err(|kind| match kind {
                 GateError::Concurrency => Rejection::ToolConcurrency(tool.to_owned()),
                 GateError::Rate => Rejection::ToolRate(tool.to_owned()),
@@ -170,7 +171,19 @@ impl Limiter {
             gate.admit(now).map_err(|kind| match kind {
                 GateError::Concurrency => Rejection::ClientConcurrency(client.to_owned()),
                 GateError::Rate => Rejection::ClientRate(client.to_owned()),
-            })?
+            })
+        };
+        let client_permit = match client_permit {
+            Ok(permit) => permit,
+            Err(rejection) => {
+                // The tool's rate token was spent before the client was
+                // checked. The call never ran, so the token goes back; the
+                // tool's concurrency slot is released when `tool_permit` drops.
+                if let Some(gate) = tool_gate {
+                    gate.refund_token();
+                }
+                return Err(rejection);
+            }
         };
 
         Ok(Permit {
@@ -237,6 +250,15 @@ impl Gate {
         slots_free && refilled
     }
 
+    /// Returns a rate token taken by [`Gate::admit`] for a call that was then
+    /// refused by another gate. A gate without a rate limit has nothing to
+    /// return.
+    fn refund_token(&self) {
+        if let Some(bucket) = &self.bucket {
+            lock(bucket).refund();
+        }
+    }
+
     /// Takes a concurrency slot first, then a rate token. Taking the slot first
     /// means a call that is only blocked by concurrency does not spend a token.
     fn admit(&self, now: Instant) -> Result<Option<OwnedSemaphorePermit>, GateError> {
@@ -294,6 +316,11 @@ impl Bucket {
         }
     }
 
+    /// Gives one token back, up to capacity.
+    fn refund(&mut self) {
+        self.tokens = (self.tokens + 1.0).min(self.capacity);
+    }
+
     /// Whether the bucket would be at capacity at `now`, without spending.
     fn is_full_at(&self, now: Instant) -> bool {
         let refilled = match self.last {
@@ -336,6 +363,25 @@ mod tests {
         for _ in 0..100 {
             assert!(limiter.acquire("echo", "c1").is_ok());
         }
+    }
+
+    #[test]
+    fn a_call_refused_by_the_client_gate_does_not_spend_the_tool_token() {
+        let limiter = Limiter::new(
+            [("echo", limits(Some(1.0), Some(2), None))],
+            limits(None, None, Some(1)),
+        );
+        let t0 = Instant::now();
+        let held = limiter.acquire_at("echo", "c1", t0).unwrap();
+        // The client's one slot is taken, so this call is refused after the
+        // tool's token was spent. The token must come back.
+        assert_eq!(
+            limiter.acquire_at("echo", "c1", t0).unwrap_err(),
+            Rejection::ClientConcurrency("c1".into())
+        );
+        drop(held);
+        // Two tokens existed at the start, so a second admission still fits.
+        assert!(limiter.acquire_at("echo", "c1", t0).is_ok());
     }
 
     #[test]

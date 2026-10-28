@@ -37,6 +37,7 @@ struct CompiledRule {
     id: String,
     effect: Effect,
     tool: Option<GlobMatcher>,
+    prompt: Option<GlobMatcher>,
     method: Option<String>,
     args: BTreeMap<String, Value>,
     hosts: Vec<GlobMatcher>,
@@ -57,6 +58,7 @@ struct Context<'a> {
     method: &'a str,
     caller: Option<&'a str>,
     tool: Option<&'a str>,
+    prompt: Option<&'a str>,
     arguments: &'a Value,
     host: Field<'a>,
     fs_path: Field<'a>,
@@ -72,6 +74,7 @@ struct CacheKey<'a> {
     method: &'a str,
     caller: Option<&'a str>,
     tool: Option<&'a str>,
+    prompt: Option<&'a str>,
     arguments: &'a Value,
     host: Field<'a>,
     fs_path: Field<'a>,
@@ -221,7 +224,7 @@ impl Engine {
     /// Evaluate one request as of `now`. Exists so quota windows can be tested
     /// without sleeping.
     pub(crate) fn evaluate_at(&self, input: &PolicyInput, now: Instant) -> Decision {
-        match self.outcome(input, now) {
+        match self.outcome(input, now, true) {
             DslOutcome::Matched(verdict) => enforce(
                 self.dry_run,
                 verdict.effect,
@@ -251,7 +254,10 @@ impl Engine {
     ///
     /// Outcomes are cached on the normalised input, except outcomes that touched
     /// a quota: those depend on the budget at the time of the call.
-    pub(crate) fn outcome(&self, input: &PolicyInput, now: Instant) -> DslOutcome {
+    ///
+    /// With `charge` false, an allow rule's quota is not spent, and such an
+    /// outcome is never cached. See [`crate::Policy::evaluate_recheck`].
+    pub(crate) fn outcome(&self, input: &PolicyInput, now: Instant, charge: bool) -> DslOutcome {
         let host = input.host.as_deref().map(normalize_host);
         let fs_path = input.fs_path.as_deref().map(normalize_path);
         let uris: Vec<Option<String>> = input.uris.iter().map(|uri| normalize_uri(uri)).collect();
@@ -260,6 +266,7 @@ impl Engine {
             method: &input.method,
             caller: input.caller.as_deref(),
             tool: input.tool.as_deref(),
+            prompt: input.prompt.as_deref(),
             arguments: &input.arguments,
             host: Field::of(&host),
             fs_path: Field::of(&fs_path),
@@ -281,6 +288,7 @@ impl Engine {
             method: &input.method,
             caller: input.caller.as_deref(),
             tool: input.tool.as_deref(),
+            prompt: input.prompt.as_deref(),
             arguments: &input.arguments,
             host: Field::of(&host),
             fs_path: Field::of(&fs_path),
@@ -291,7 +299,7 @@ impl Engine {
             None => (DslOutcome::NoMatch, true),
             Some(rule) => match rule.quota() {
                 Some(quota) if rule.effect == Effect::Allow => {
-                    let admitted = self.admit(rule, quota, input.caller.as_deref(), now);
+                    let admitted = !charge || self.admit(rule, quota, input.caller.as_deref(), now);
                     let verdict = if admitted {
                         Verdict {
                             effect: Effect::Allow,
@@ -451,6 +459,7 @@ fn compile(rule: &Rule) -> Result<CompiledRule, PolicyError> {
         id: rule.id.clone(),
         effect: rule.effect,
         tool: rule.tool.as_deref().map(glob).transpose()?,
+        prompt: rule.prompt.as_deref().map(glob).transpose()?,
         method: rule.method.clone(),
         args: rule.args.clone(),
         hosts: rule
@@ -477,6 +486,12 @@ fn matches(rule: &CompiledRule, ctx: &Context<'_>) -> bool {
     if let Some(tool_glob) = &rule.tool {
         match ctx.tool {
             Some(tool) if tool_glob.is_match(tool) => {}
+            _ => return false,
+        }
+    }
+    if let Some(prompt_glob) = &rule.prompt {
+        match ctx.prompt {
+            Some(prompt) if prompt_glob.is_match(prompt) => {}
             _ => return false,
         }
     }

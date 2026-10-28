@@ -142,6 +142,7 @@ impl LoadedTool {
         });
         let slot = lease.slot_mut();
         slot.store.data_mut().control = Arc::clone(&control);
+        slot.store.data_mut().hooks.deadline = Some(control.deadline);
         slot.store.set_epoch_deadline(1);
 
         let outcome = catch_unwind(AssertUnwindSafe(|| op(&mut slot.store, &slot.bindings)));
@@ -317,7 +318,7 @@ impl Runtime {
 
         let headers =
             secrets
-                .headers_for(&config.secrets)
+                .resolve(&config.secrets)
                 .map_err(|missing| ToolError::InvalidConfig {
                     tool: name.to_owned(),
                     message: format!("secret `{}` is not set", missing.name),
@@ -471,7 +472,7 @@ impl Pool {
             http: WasiHttpCtx::new(),
             table: ResourceTable::new(),
             limits: Runtime::limits(self.memory_bytes),
-            hooks: PolicyHooks(Arc::clone(&self.http)),
+            hooks: PolicyHooks::new(Arc::clone(&self.http)),
             control: Arc::new(CallControl {
                 deadline: Instant::now() + self.time_limit,
                 cancel: CancelToken::new(),

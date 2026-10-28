@@ -179,6 +179,7 @@ pub(crate) enum Backend {
     },
     Upstream {
         gate: Arc<PolicyGate>,
+        /// The upstream's own name for the tool.
         tool_name: String,
     },
 }
@@ -537,11 +538,19 @@ impl Router {
             .ok_or_else(|| RouterError::UnknownTool(name.to_owned()))?;
 
         let _in_flight = self.lifecycle.begin()?;
-        let _permit = self.limiter.acquire_queued(name, caller).await?;
+        // Wasm tools are limited under their config name, which is not always
+        // the exposed name the guest describes itself with (SR-13).
+        let limit_key = match &route.backend {
+            Backend::Wasm { tool, .. } => tool.name(),
+            Backend::Upstream { .. } => name,
+        };
+        let _permit = self.limiter.acquire_queued(limit_key, caller).await?;
 
         match &route.backend {
             Backend::Upstream { gate, tool_name } => {
-                let result = gate.call_tool(caller, tool_name, arguments).await?;
+                let result = gate
+                    .call_tool_as(caller, name, tool_name, arguments)
+                    .await?;
                 Ok(ToolOutput::Upstream(result))
             }
             Backend::Wasm { tool, tool_name } => {
@@ -603,6 +612,7 @@ mod tests {
             description: None,
             effect: Effect::Allow,
             tool: Some(tool_name.to_owned()),
+            prompt: None,
             method: None,
             args: BTreeMap::new(),
             hosts: Vec::new(),
@@ -665,7 +675,7 @@ mod tests {
 
     #[tokio::test]
     async fn prefixed_upstream_tools_are_listed_and_dispatched() {
-        let policy = policy(vec![allow("search")]);
+        let policy = policy(vec![allow("gh__search")]);
         let mut router = Router::new(Limiter::new([], Limits::default()), Arc::clone(&policy));
         router
             .add_upstream(Some("gh__"), gate(policy), vec![tool("search")])
@@ -687,8 +697,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn policy_sees_the_exposed_name_so_same_named_upstream_tools_are_told_apart() {
+        // Both upstreams serve `search`. Only the first is allowed, so the
+        // second must be denied even though its own name matches the rule.
+        let policy = policy(vec![allow("kb__search")]);
+        let mut router = Router::new(Limiter::new([], Limits::default()), Arc::clone(&policy));
+        router
+            .add_upstream(
+                Some("kb__"),
+                gate(Arc::clone(&policy)),
+                vec![tool("search")],
+            )
+            .unwrap();
+        router
+            .add_upstream(
+                Some("web__"),
+                gate(Arc::clone(&policy)),
+                vec![tool("search")],
+            )
+            .unwrap();
+
+        assert!(
+            router
+                .call("agent", "kb__search", None, CancelToken::new())
+                .await
+                .is_ok()
+        );
+        match router
+            .call("agent", "web__search", None, CancelToken::new())
+            .await
+        {
+            Err(RouterError::Denied { .. }) => {}
+            other => panic!("expected denial for the unlisted upstream, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn renamed_tool_is_exposed_under_its_new_name_and_called_upstream_by_its_own() {
-        let policy = policy(vec![allow("search")]);
+        let policy = policy(vec![allow("kb__find")]);
         let mut router = Router::new(Limiter::new([], Limits::default()), Arc::clone(&policy));
         let exposure = Exposure {
             rename: BTreeMap::from([("search".to_owned(), "find".to_owned())]),
@@ -1071,14 +1117,14 @@ mod mcp_tests {
 
     #[tokio::test]
     async fn tools_list_shows_namespaced_names() {
-        let handler = handler_with(vec![allow("echo")]);
+        let handler = handler_with(vec![allow("gh__echo")]);
         let response = ask(&handler, &session(), "tools/list", None).await;
         assert_eq!(response["result"]["tools"][0]["name"], "gh__echo");
     }
 
     #[tokio::test]
     async fn allowed_call_returns_upstream_result() {
-        let handler = handler_with(vec![allow("echo")]);
+        let handler = handler_with(vec![allow("gh__echo")]);
         let response = ask(
             &handler,
             &session(),
@@ -1092,7 +1138,7 @@ mod mcp_tests {
 
     #[tokio::test]
     async fn denied_call_is_a_tool_error_the_agent_can_read() {
-        let mut rule = allow("echo");
+        let mut rule = allow("gh__echo");
         rule.effect = Effect::Deny;
         let handler = handler_with(vec![rule]);
         let response = ask(
@@ -1113,7 +1159,7 @@ mod mcp_tests {
 
     #[tokio::test]
     async fn unknown_tool_is_a_protocol_error() {
-        let handler = handler_with(vec![allow("echo")]);
+        let handler = handler_with(vec![allow("gh__echo")]);
         let response = ask(
             &handler,
             &session(),
@@ -1126,14 +1172,14 @@ mod mcp_tests {
 
     #[tokio::test]
     async fn call_without_params_is_a_protocol_error() {
-        let handler = handler_with(vec![allow("echo")]);
+        let handler = handler_with(vec![allow("gh__echo")]);
         let response = ask(&handler, &session(), "tools/call", None).await;
         assert_eq!(response["error"]["code"], -32602);
     }
 
     #[tokio::test]
     async fn unsupported_method_is_method_not_found() {
-        let handler = handler_with(vec![allow("echo")]);
+        let handler = handler_with(vec![allow("gh__echo")]);
         let response = ask(&handler, &session(), "resources/subscribe", None).await;
         assert_eq!(response["error"]["code"], -32601);
     }

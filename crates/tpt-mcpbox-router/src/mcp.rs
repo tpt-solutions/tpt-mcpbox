@@ -399,6 +399,7 @@ mod tests {
             description: None,
             effect: tpt_mcpbox_config::model::Effect::Allow,
             tool: Some("t".to_owned()),
+            prompt: None,
             method: None,
             args: Default::default(),
             hosts: Vec::new(),

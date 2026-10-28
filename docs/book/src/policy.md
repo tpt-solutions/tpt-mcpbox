@@ -7,6 +7,7 @@ policy before anything runs. The request is described by a policy input:
 |-------|---------|
 | `method` | The MCP method, e.g. `tools/call`. |
 | `tool` | The exposed tool name. |
+| `prompt` | The prompt name for `prompts/get`, as the agent sees it. |
 | `caller` | The session that made the call. |
 | `arguments` | The call's arguments. Used for matching, never recorded. |
 | `host` | The network host the call would reach, if any. |
@@ -50,7 +51,11 @@ policy:
 
 Matching rules:
 
-- `tool`, `method`, `caller`: exact or glob.
+- `tool`, `prompt`, `method`, `caller`: exact or glob. A `prompt` rule never
+  matches a tool call, and a `tool` rule never matches a prompt.
+- `hosts` and `paths` on a deny rule are not enforced yet: the policy is not
+  given the host or path of a call, so such a rule never matches. The loader
+  warns about it. See the security review, SR-01.
 - `hosts`: glob, case-insensitive, after normalisation. Look-alike Unicode
   hosts are normalised before matching.
 - `paths`: glob, applied to the normalised path. Traversal such as `..` does not
