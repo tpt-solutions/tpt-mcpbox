@@ -196,16 +196,16 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 - [~] Sandbox-escape test suite: attempt fs/net/env access outside grants, path traversal, symlink escape, oversized alloc, infinite loop, deep recursion — **done:** ungranted files and environment, relative traversal, symlink escape (skipped, with a message, where Windows refuses to create the link), outbound hosts, runaway loops, memory limit, guest panics. **Open:** deep recursion (the test guest has no such export yet).
 - [~] Secret-safety tests: assert secrets absent from logs, errors, audit payloads, panic messages, `/metrics` — **done for audit payloads** (argument values are never recorded, only key names) and for agent-facing replies, including an upstream error that echoes a credential. **Logs and `/metrics`** are asserted too: a call with a secret argument and a leaking upstream writes no secret to the captured tracing output or the metrics render (`mcp.rs`). **Panic messages:** a guest that panics with its arguments in the message does not leak them: the host receives only the trap (`error while executing at wasm backtrace:`), and a sandbox test pins that (`a_panic_message_does_not_cross_the_boundary`). **Open:** a host-side panic's message is not checked; it is not expected to carry guest data.
 - [~] Prompt-injection scenario tests: malicious tool args must not bypass policy — **started:** `arguments_cannot_impersonate_the_caller_or_tool` (router) shows that argument keys claiming a caller or tool do not change the policy's view. **Done for argument predicates:** they are exact JSON matches, so no traversal spelling satisfies one (policy test). **Open:** Rego rules receive raw arguments, so a Rego rule that compares paths must normalise them itself; this is a residual risk until a normalising helper exists for Rego.
-- [~] Supply chain: `cargo-deny` gates, `cargo-vet` or `cargo-auditable`, SBOM (CycloneDX) in release — **done:** `cargo-deny` runs in CI; a `sbom` CI job generates a CycloneDX SBOM as an artifact. **Open:** cargo-vet or cargo-auditable, and attaching the SBOM to a release.
+- [x] Supply chain: `cargo-deny`, `cargo-audit` and cargo-auditable — **done:** cargo-deny and cargo-audit in CI; cargo-auditable for release binaries (dist) plus an `auditable` CI job running `cargo audit bin`; CycloneDX SBOM in CI and in `release.yml`, whose `attach` job uploads it to an existing release (off until `RELEASE_ASSETS_ENABLED=true`).
 - [~] Resource-exhaustion / DoS tests for rate limiter and pool — **done for the limiter:** 10,000 distinct idle clients are swept back to one gate; 1,000 client-rejected calls leak no tool slots; 32 threads never exceed a tool's concurrency cap (3 tests in `limiter.rs`). **Pool:** the existing sandbox `concurrency_cap_is_enforced` covers the instance cap; a flood against the pool itself is **open**.
-- [ ] External-style security review pass + checklist sign-off before v0.1.0
+- [~] External-style security review pass + checklist sign-off before v0.1.0 — **done:** internal pass in `docs/security-review.md` (SR-01..SR-26, 6 fixed). **Open:** external review and sign-off; SR-01 critical, SR-03/04/05 high.
 
 ## Phase 12 — Documentation & Release
 
 - [x] Docs site (`mdBook`) — **done:** `book.toml` and `docs/book/src`, built by a `docs` CI job. The security, architecture and integration chapters include the files in `docs/` directly. Nothing is deployed. Scope as written: quickstart, config reference, capability & policy guide (YAML + Rego), Wasm tool authoring (SDK), security model, architecture, operations/observability, troubleshooting
-- [~] Doc examples tested in CI where feasible — the book builds in CI, but its YAML and Rego snippets are not executed yet.
-- [ ] `cargo-dist`: build + package binaries for Linux x86_64, macOS arm64, macOS x86_64, Windows x86_64 with SHA-256 checksums, on tag
-- [~] `release-plz`/`git-cliff` changelog + version bump workflow — **done:** `release-plz.toml` (publishing and GitHub release switched off) and `cliff.toml`. **Open:** the release workflow itself.
+- [x] Doc examples tested in CI where feasible — `book_examples` test validates every YAML block and compiles and evaluates every Rego block; runs in the docs job.
+- [~] `cargo-dist`: build + package binaries for Linux x86_64, macOS arm64, macOS x86_64, Windows x86_64 with SHA-256 checksums, on tag — **done:** `dist-workspace.toml` and `release.yml` (tag push only; builds, sha256, SBOM, never creates a release). **Open:** first real tag run.
+- [x] `release-plz`/`git-cliff` changelog + version bump workflow — **done:** `release-plz.yml` (workflow_dispatch, release-PR only, no publish step); `cliff.toml`. Publishing stays off.
 - [ ] Publish crates to crates.io in dependency order (`--dry-run` first)
 - [ ] GitHub Release with binaries, `.wasm` example tools, SBOM, notes
 - [ ] Tag `v0.1.0`; announce; update README status → Released
@@ -214,8 +214,8 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 
 ## Verification (per phase / at v1)
 
-- [ ] `cargo test --workspace` green on all 4 platforms in CI
-- [ ] `cargo clippy --workspace --all-targets -D warnings`, `cargo fmt --check`, `cargo deny check`
+- [ ] `cargo test --workspace` green on all 4 platforms in CI — matrix now covers ubuntu, macos-latest (arm64), macos-15-intel and windows; needs a CI run.
+- [ ] `cargo clippy --workspace --all-targets -D warnings`, `cargo fmt --check`, `cargo deny check` — covered by the lint and supply-chain jobs; needs a CI run.
 - [ ] MCP Inspector / Claude Code connects over stdio and Streamable HTTP; `tools/list`, `resources/list`, `prompts/list` populated from Wasm + an upstream server
 - [ ] `tools/call` on `tools/tpt-mcpbox-tool-github` succeeds with proxy-injected token; the same call is **denied** when the policy host allowlist is emptied
 - [ ] `tools/call` on `tools/tpt-mcpbox-tool-fs` can write only under `./workspace/output/**`; escape attempts denied
