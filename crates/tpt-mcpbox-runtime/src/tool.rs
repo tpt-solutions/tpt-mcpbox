@@ -237,7 +237,12 @@ impl Runtime {
             });
         };
         let path = base.join(relative);
-        let module = module::load_file(name, &path, config.sha256.as_deref())?;
+        let module = module::load_file(
+            name,
+            &path,
+            config.sha256.as_deref(),
+            config.minisign_key.as_deref(),
+        )?;
         self.build_tool(name, &module.bytes, &module.digest, config, secrets, base)
     }
 
@@ -259,6 +264,7 @@ impl Runtime {
             wasm_path: None,
             oci_ref: None,
             sha256: None,
+            minisign_key: None,
             enabled: true,
             capabilities: tpt_mcpbox_config::Capabilities::default(),
             secrets: Vec::new(),

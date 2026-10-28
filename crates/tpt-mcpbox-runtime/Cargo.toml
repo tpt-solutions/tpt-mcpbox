@@ -24,6 +24,7 @@ http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+minisign-verify = "0.1"
 hex = { workspace = true }
 hyper = "1"
 http-body-util = "0.1"
@@ -38,6 +39,7 @@ wasmtime-wasi-io = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true }
 tempfile = { workspace = true }
+minisign = "0.7"
 
 [[bench]]
 name = "invocation"

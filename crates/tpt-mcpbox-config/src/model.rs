@@ -140,6 +140,10 @@ pub struct ToolConfig {
     /// Expected SHA-256 of the component; required once publishing starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
+    /// minisign public key the module must be signed with. The signature is read
+    /// from `<wasm_path>.minisig`, and the module is refused unless it verifies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minisign_key: Option<String>,
     /// Whether the tool is advertised to the agent.
     #[serde(default = "default_true")]
     pub enabled: bool,

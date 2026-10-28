@@ -30,6 +30,7 @@ tools:
     description: Search GitHub repositories
     wasm_path: ./tools/github.wasm
     sha256: "9f2c…"          # refuse the module unless its bytes hash to this
+    minisign_key: "RWQ…"     # optional: refuse unless `<wasm_path>.minisig` verifies under this key
     enabled: true
     capabilities:
       network: ["api.github.com"]   # host allowlist; empty means no network
@@ -54,6 +55,11 @@ wildcard anywhere else, such as `workspace/*.log`, is refused at load.
 
 Set `sha256` once the module is built (`sha256sum file.wasm`). An unpinned
 module still loads, with a warning that prints its digest.
+
+To require a signature, set `minisign_key` to the public key from `minisign -G`,
+and sign the module with `minisign -Sm file.wasm`. The signature must sit beside
+the module as `file.wasm.minisig`. A module that does not verify under the key is
+refused before it is compiled.
 
 ## `upstreams`
 

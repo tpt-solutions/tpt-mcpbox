@@ -23,6 +23,15 @@ pub enum ToolError {
         source: std::io::Error,
     },
 
+    /// The module's signature is missing or does not verify under the configured
+    /// public key. The module is never compiled.
+    #[error("tool `{tool}`: module signature is not valid: {reason}")]
+    SignatureInvalid {
+        /// Tool name.
+        tool: String,
+        /// What failed: the signature file, its format, or the check itself.
+        reason: String,
+    },
     /// The module's SHA-256 does not match the pin in configuration. The module
     /// is never compiled.
     #[error("tool `{tool}`: module digest {actual} does not match the pinned sha256 {expected}")]

@@ -48,6 +48,7 @@ fn bench_warm_invocation(c: &mut Criterion) {
         wasm_path: Some(guest_path()),
         oci_ref: None,
         sha256: None,
+        minisign_key: None,
         enabled: true,
         capabilities: Capabilities::default(),
         secrets: Vec::new(),

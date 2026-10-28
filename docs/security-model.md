@@ -154,7 +154,7 @@ v0.1.0.
 | R2 | DNS rebinding and private-address (SSRF) checks are not done. An allowlisted name that resolves to a private or link-local address is not blocked. | Open |
 | R3 | Guest memory persists across calls within one recycle window. `recycle_after` is fixed at 256 and not yet configurable. | Partly mitigated |
 | R4 | A filesystem grant preopens its fixed directory. A grant of `workspace/*.md` exposes all of `workspace/` to the guest, and a write grant of `workspace/*.log` makes all of `workspace/` writable. | Accepted, documented |
-| R5 | Signature verification of modules (`sigstore`/`minisign`) is not implemented. SHA-256 pinning is the only integrity check, and unpinned modules load with a warning. | Open |
+| R5 | Signature verification is opt-in with minisign (`minisign_key`); `sigstore` is not implemented. Without a key, SHA-256 pinning is the only integrity check, and unpinned modules load with a warning. | Open (minisign opt-in) |
 | R6 | OCI pulls are refused (`ToolError::Unsupported`), so there is no supply-chain path to audit yet. | Open (feature gap) |
 | R7 | Upstream responses are scanned only against the per-upstream `scan` rules an operator writes, and prompts are not scanned. Known secret values are redacted. | Partly mitigated |
 | R8 | Client-side rate-limit state is never evicted, so memory grows with the number of distinct session ids. | Open |
