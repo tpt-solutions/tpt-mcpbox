@@ -21,7 +21,8 @@ const DESCRIPTORS: &str = r#"[
   {"name": "spin", "description": "never returns", "input_schema": {"type": "object"}},
   {"name": "grow", "description": "allocates memory", "input_schema": {"type": "object"}},
   {"name": "panic", "description": "panics", "input_schema": {"type": "object"}},
-  {"name": "fail", "description": "returns a tool error", "input_schema": {"type": "object"}}
+  {"name": "fail", "description": "returns a tool error", "input_schema": {"type": "object"}},
+  {"name": "panic-echo", "description": "panics with its arguments in the message", "input_schema": {"type": "object"}}
 ]"#;
 
 /// Read one string field from the JSON arguments, or `None` when absent.
@@ -102,6 +103,7 @@ impl Guest for Fixture {
                 Ok(format!("{}", buffer.len()))
             }
             "panic" => panic!("fixture panic on request"),
+            "panic-echo" => panic!("fixture panic with {arguments}"),
             "fail" => Err("fixture refused the request".to_owned()),
             other => Err(format!("unknown tool {other}")),
         }

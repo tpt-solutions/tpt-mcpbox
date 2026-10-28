@@ -385,6 +385,38 @@ fn a_tool_error_is_reported_without_discarding_the_instance() {
 }
 
 #[test]
+fn pool_usage_counts_checked_out_instances() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut cfg = config("fixture");
+    cfg.limits.max_concurrent_calls = Some(2);
+    cfg.capabilities.time_limit = Some(Duration::from_millis(800));
+    let tool = Arc::new(load(&cfg, dir.path()));
+    assert_eq!(
+        tool.pool_usage(),
+        tpt_mcpbox_runtime::PoolUsage {
+            leased: 0,
+            capacity: 2
+        }
+    );
+
+    let busy = Arc::clone(&tool);
+    let spinner = std::thread::spawn(move || busy.call("spin", "{}", &CancelToken::new()));
+    // Wait until the spinning call holds its instance.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while tool.pool_usage().leased == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the call never leased"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(tool.pool_usage().leased, 1);
+
+    let _ = spinner.join().expect("spinner finishes");
+    assert_eq!(tool.pool_usage().leased, 0, "the lease is returned");
+}
+
+#[test]
 fn concurrency_cap_is_enforced() {
     let dir = tempfile::tempdir().expect("temp dir");
     let mut cfg = config("fixture");
@@ -480,4 +512,24 @@ fn a_missing_secret_fails_the_load() {
         runtime().load_tool(&cfg, &SecretStore::new(), dir.path()),
         Err(ToolError::InvalidConfig { .. })
     ));
+}
+
+#[test]
+fn a_panic_message_does_not_cross_the_boundary() {
+    // The guest's panic text stays in the guest: the host sees only the trap.
+    // So a secret the guest puts in its panic message is never reported.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let tool = load(&config("fixture"), dir.path());
+    let secret = "sk-live-PANIC-9";
+
+    match call(&tool, "panic-echo", &format!(r#"{{"token":"{secret}"}}"#)) {
+        Err(ToolError::Trapped { message, .. }) => {
+            assert!(
+                !message.contains(secret),
+                "trap text leaked the panic: {message}"
+            );
+        }
+        other => panic!("expected a trap, got {other:?}"),
+    }
+    assert_eq!(call(&tool, "echo", "after").expect("serving"), "after");
 }

@@ -33,7 +33,7 @@ pub use error::ToolError;
 pub use runtime::{CancelToken, Runtime};
 pub use tool::{
     DEFAULT_MAX_CONCURRENT, DEFAULT_MEMORY_BYTES, DEFAULT_PAYLOAD_BYTES, DEFAULT_RECYCLE_AFTER,
-    DEFAULT_TIME_LIMIT, LoadedTool,
+    DEFAULT_TIME_LIMIT, LoadedTool, PoolUsage,
 };
 
 /// Crate version, surfaced by `mcpbox --version`.

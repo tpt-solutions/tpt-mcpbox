@@ -54,7 +54,22 @@ pub struct LoadedTool {
     pool: Pool,
 }
 
+/// How busy one tool's instance pool is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolUsage {
+    /// Instances checked out for a call right now.
+    pub leased: usize,
+    /// The most instances the pool will hold at once.
+    pub capacity: usize,
+}
+
 impl LoadedTool {
+    /// How many instances are in use, against the pool's cap.
+    #[must_use]
+    pub fn pool_usage(&self) -> PoolUsage {
+        self.pool.usage()
+    }
+
     /// The configured tool name.
     #[must_use]
     pub fn name(&self) -> &str {
@@ -411,6 +426,14 @@ impl std::fmt::Debug for Slot {
 }
 
 impl Pool {
+    fn usage(&self) -> PoolUsage {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        PoolUsage {
+            leased: state.leased,
+            capacity: self.max,
+        }
+    }
+
     /// Take an idle instance, or instantiate one if the cap allows.
     fn checkout(&self) -> Result<Lease<'_>, ToolError> {
         {
