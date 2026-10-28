@@ -174,6 +174,26 @@ impl Router {
         Ok(())
     }
 
+    /// Whether any resource or resource template is served, so the server may
+    /// advertise `resources`.
+    #[must_use]
+    pub fn serves_resources(&self) -> bool {
+        !self.resources.is_empty() || !self.resource_templates.is_empty()
+    }
+
+    /// Whether any prompt is served, so the server may advertise `prompts`.
+    #[must_use]
+    pub fn serves_prompts(&self) -> bool {
+        !self.prompts.is_empty()
+    }
+
+    /// Whether any completable reference (a prompt or a resource template) is
+    /// served. Completion also needs an upstream that supports it.
+    #[must_use]
+    pub fn serves_completion_targets(&self) -> bool {
+        !self.prompts.is_empty() || !self.resource_templates.is_empty()
+    }
+
     /// Every resource, in URI order.
     #[must_use]
     pub fn list_resources(&self) -> Vec<Resource> {
