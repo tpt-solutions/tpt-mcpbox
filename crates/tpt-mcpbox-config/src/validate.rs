@@ -592,6 +592,12 @@ fn validate_audit(config: &Config, report: &mut ValidationReport) {
     if !config.audit.enabled {
         return;
     }
+    if config.audit.max_segment_bytes == 0 {
+        report.diagnostics.push(Diagnostic::error(
+            "audit.max_segment_bytes",
+            "a segment must hold at least one byte",
+        ));
+    }
     match config.audit.key_env.as_deref() {
         None => report.diagnostics.push(Diagnostic::warning(
             "audit.key_env",

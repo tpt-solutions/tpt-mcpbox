@@ -148,7 +148,8 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
             }
             None => AuditLog::open(&path),
         }
-        .map_err(|error| format!("audit log: {error}"))?;
+        .map_err(|error| format!("audit log: {error}"))?
+        .with_max_segment_bytes(config.audit.max_segment_bytes);
         Some(Arc::new(log))
     } else {
         None

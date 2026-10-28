@@ -161,7 +161,10 @@ Without a key, anyone who can write the log can rebuild its whole chain, and the
 loader warns. A log written with a key cannot be opened without it, and the
 reverse holds too.
 
-`sign` and `max_segment_bytes` are accepted by the schema but not acted on yet.
+`max_segment_bytes` (default 64 MB) rolls the log into numbered segments,
+`audit.log.1`, `audit.log.2` and so on. The chain runs across them, and
+`tpt-mcpbox audit verify` checks every segment. `sign` is accepted by the schema
+but not acted on yet.
 See [Operations](operations.md).
 
 ## `metrics` and `logging`

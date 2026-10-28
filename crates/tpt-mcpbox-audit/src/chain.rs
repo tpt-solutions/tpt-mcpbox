@@ -135,11 +135,102 @@ impl LockFile {
 
 #[derive(Debug)]
 struct Head {
-    file: File,
+    /// The live file. `None` only while a rotation has it closed, which Windows
+    /// requires before the file can be renamed.
+    file: Option<File>,
     next_seq: u64,
     prev: String,
     /// The key the chain is hashed under, or `None` for plain SHA-256.
     key: Option<Vec<u8>>,
+    /// Roll to a new segment before the live file would exceed this many bytes.
+    max_segment_bytes: Option<u64>,
+}
+
+impl Head {
+    /// Whether `incoming` more bytes would push the live file past the limit. A
+    /// file that is still empty is never rolled, so one oversized entry is
+    /// written whole rather than looping.
+    fn needs_rotation(&self, incoming: usize) -> Result<bool, AuditError> {
+        let Some(max) = self.max_segment_bytes else {
+            return Ok(false);
+        };
+        let file = self.file.as_ref().ok_or_else(closed)?;
+        let len = file.metadata()?.len();
+        Ok(len > 0 && len.saturating_add(incoming as u64) > max)
+    }
+
+    /// Closes the live file, renames it to the next numbered segment, and opens
+    /// a fresh live file. The chain carries on: the next entry links to the last
+    /// entry of the segment just closed.
+    fn rotate(&mut self, path: &Path) -> Result<(), AuditError> {
+        // Dropping the handle is what lets the rename happen on Windows.
+        drop(self.file.take());
+        let segment = segment_path(path, next_segment_number(path)?);
+        if let Err(error) = std::fs::rename(path, &segment) {
+            // Keep logging to the live file rather than losing the handle.
+            self.file = Some(open_append(path)?);
+            return Err(error.into());
+        }
+        self.file = Some(open_append(path)?);
+        Ok(())
+    }
+}
+
+fn closed() -> AuditError {
+    AuditError::Io(std::io::Error::other(
+        "audit log has no open file after a failed rotation",
+    ))
+}
+
+fn open_append(path: &Path) -> Result<File, AuditError> {
+    Ok(OpenOptions::new().create(true).append(true).open(path)?)
+}
+
+/// `path` with `.N` appended: the segment file holding the Nth rolled-over part.
+fn segment_path(path: &Path, number: u64) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".{number}"));
+    PathBuf::from(name)
+}
+
+/// The rolled-over segments of the log at `path`, in order, with their numbers.
+/// Only files named `<log>.<digits>` count, so the lock file is never one.
+fn segments(path: &Path) -> Result<Vec<(u64, PathBuf)>, AuditError> {
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    let Some(stem) = path.file_name().and_then(|name| name.to_str()) else {
+        return Ok(Vec::new());
+    };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let prefix = format!("{stem}.");
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(digits) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        if let Ok(number) = digits.parse::<u64>() {
+            found.push((number, entry.path()));
+        }
+    }
+    found.sort_by_key(|(number, _)| *number);
+    Ok(found)
+}
+
+fn next_segment_number(path: &Path) -> Result<u64, AuditError> {
+    Ok(segments(path)?.last().map_or(1, |(number, _)| number + 1))
 }
 
 impl AuditLog {
@@ -174,14 +265,15 @@ impl AuditLog {
         // chain between verification and the first append.
         let lock = LockFile::acquire(&path)?;
         let report = verify_with(&path, key.as_deref())?;
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let file = open_append(&path)?;
         Ok(Self {
             path,
             state: Mutex::new(Head {
-                file,
+                file: Some(file),
                 next_seq: report.entries,
                 prev: report.head,
                 key,
+                max_segment_bytes: None,
             }),
             _lock: lock,
         })
@@ -191,6 +283,15 @@ impl AuditLog {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Rolls the log into a numbered segment (`<path>.1`, `<path>.2`, ...) once
+    /// the live file would grow past `bytes`. The chain runs across segments, and
+    /// [`verify`] reads them all in order.
+    #[must_use]
+    pub fn with_max_segment_bytes(self, bytes: u64) -> Self {
+        lock(&self.state).max_segment_bytes = Some(bytes);
+        self
     }
 
     /// Appends one entry and syncs it to disk before returning.
@@ -221,16 +322,19 @@ impl AuditLog {
 
         let mut line = serde_json::to_string(&entry)?;
         line.push('\n');
-        let before = head.file.metadata()?.len();
-        if let Err(error) = head
-            .file
+        if head.needs_rotation(line.len())? {
+            head.rotate(&self.path)?;
+        }
+        let file = head.file.as_mut().ok_or_else(closed)?;
+        let before = file.metadata()?.len();
+        if let Err(error) = file
             .write_all(line.as_bytes())
-            .and_then(|()| head.file.sync_data())
+            .and_then(|()| file.sync_data())
         {
             // Cut off whatever part of the line reached the file. Otherwise the
             // next start reads a torn entry and refuses the whole log (SR-20).
             // The head was not advanced, so the chain is unchanged.
-            let _ = head.file.set_len(before);
+            let _ = file.set_len(before);
             return Err(error.into());
         }
 
@@ -264,20 +368,19 @@ pub fn verify_keyed(path: &Path, key: &[u8]) -> Result<VerifyReport, AuditError>
 }
 
 fn verify_with(path: &Path, key: Option<&[u8]>) -> Result<VerifyReport, AuditError> {
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(VerifyReport {
-                entries: 0,
-                head: GENESIS.to_owned(),
-            });
-        }
-        Err(err) => return Err(err.into()),
-    };
+    // Segments in order, then the live file: one chain across all of them.
+    let mut files: Vec<PathBuf> = segments(path)?.into_iter().map(|(_, file)| file).collect();
+    if path.is_file() {
+        files.push(path.to_path_buf());
+    }
+    let mut chained: Box<dyn std::io::Read> = Box::new(std::io::empty());
+    for file in files {
+        chained = Box::new(std::io::Read::chain(chained, File::open(file)?));
+    }
 
     let mut expected_seq = 0u64;
     let mut prev = GENESIS.to_owned();
-    for line in BufReader::new(file).lines() {
+    for line in BufReader::new(chained).lines() {
         let line = line?;
         let entry: Entry = serde_json::from_str(&line)?;
 
@@ -489,6 +592,47 @@ mod tests {
             verify_keyed(&path, b"key"),
             Err(AuditError::Broken { seq: 0, .. })
         ));
+    }
+
+    #[test]
+    fn rolled_segments_verify_as_one_chain() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        {
+            let log = AuditLog::open(&path).unwrap().with_max_segment_bytes(300);
+            for n in 0..12 {
+                log.append("tool_call", json!({ "n": n })).unwrap();
+            }
+        }
+        assert!(
+            segment_path(&path, 1).is_file(),
+            "the first segment is rolled"
+        );
+        assert_eq!(verify(&path).unwrap().entries, 12);
+
+        // Reopening continues the chain in the live file.
+        {
+            let log = AuditLog::open(&path).unwrap().with_max_segment_bytes(300);
+            log.append("tool_call", json!({ "n": 12 })).unwrap();
+        }
+        assert_eq!(verify(&path).unwrap().entries, 13);
+    }
+
+    #[test]
+    fn a_tampered_rolled_segment_is_detected() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        {
+            let log = AuditLog::open(&path).unwrap().with_max_segment_bytes(300);
+            for n in 0..12 {
+                log.append("tool_call", json!({ "tool": format!("t{n}") }))
+                    .unwrap();
+            }
+        }
+        let first = segment_path(&path, 1);
+        let text = std::fs::read_to_string(&first).unwrap();
+        std::fs::write(&first, text.replace("t0", "rm")).unwrap();
+        assert!(matches!(verify(&path), Err(AuditError::Broken { .. })));
     }
 
     #[test]
