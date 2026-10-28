@@ -194,6 +194,7 @@ pub fn validate(config: &Config, mode: ValidationMode) -> ValidationReport {
     validate_tools(config, mode, &mut report);
     validate_upstreams(config, &mut report);
     validate_policy(config, mode, &mut report);
+    validate_audit(config, &mut report);
 
     report
         .diagnostics
@@ -586,6 +587,24 @@ fn validate_upstream_names(upstream: &UpstreamConfig, path: &str, report: &mut V
     }
 }
 
+/// Audit settings: an unkeyed chain can be rebuilt by whoever can write the file.
+fn validate_audit(config: &Config, report: &mut ValidationReport) {
+    if !config.audit.enabled {
+        return;
+    }
+    match config.audit.key_env.as_deref() {
+        None => report.diagnostics.push(Diagnostic::warning(
+            "audit.key_env",
+            "the audit chain is plain SHA-256, so anyone who can write the log can rebuild it; set `key_env` to a secret to key it (SR-24)",
+        )),
+        Some(name) if name.trim().is_empty() => report.diagnostics.push(Diagnostic::error(
+            "audit.key_env",
+            "the audit key's secret name must not be empty",
+        )),
+        Some(_) => {}
+    }
+}
+
 fn validate_policy(config: &Config, mode: ValidationMode, report: &mut ValidationReport) {
     if config.policy.default == Effect::Allow {
         if mode == ValidationMode::Serve && !config.policy.dry_run {
@@ -618,6 +637,22 @@ fn validate_policy(config: &Config, mode: ValidationMode, report: &mut Validatio
         // `paths` never matches (SR-01). Say so rather than let an operator rely
         // on it. `hosts` on a deny rule is checked only on the outbound requests
         // of Wasm tools, not on upstream calls.
+        // A deny that matches only on arguments is compared by exact JSON
+        // equality, so `"Write"` or `1.0` steps around it (SR-16).
+        let only_args = !rule.args.is_empty()
+            && rule.tool.is_none()
+            && rule.method.is_none()
+            && rule.prompt.is_none()
+            && rule.caller.is_none()
+            && rule.hosts.is_empty()
+            && rule.paths.is_empty()
+            && rule.uris.is_empty();
+        if rule.effect == Effect::Deny && only_args {
+            report.diagnostics.push(Diagnostic::warning(
+                &path,
+                "a deny rule that matches only on `args` compares values exactly; spellings such as `Write` for `write` pass it. Also name the tool",
+            ));
+        }
         if rule.effect == Effect::Deny && !rule.paths.is_empty() {
             report.diagnostics.push(Diagnostic::warning(
                 &path,
@@ -902,6 +937,56 @@ policy:
     }
 
     #[test]
+    fn an_audit_log_without_a_key_draws_a_warning() {
+        let report = validate(
+            &parse(
+                "version: 1
+",
+            ),
+            ValidationMode::Serve,
+        );
+        let warnings: Vec<_> = report
+            .of_severity(Severity::Warning)
+            .into_iter()
+            .filter(|d| d.path == "audit.key_env")
+            .collect();
+        assert_eq!(warnings.len(), 1, "{report}");
+
+        let keyed = parse(
+            "version: 1
+audit:
+  key_env: MCPBOX_AUDIT_KEY
+",
+        );
+        assert!(validate(&keyed, ValidationMode::Serve).is_ok());
+    }
+
+    #[test]
+    fn an_empty_audit_key_name_is_an_error() {
+        let config = parse(
+            "version: 1
+audit:
+  key_env: \"  \"
+",
+        );
+        assert!(
+            errors(&config)
+                .iter()
+                .any(|e| e.contains("must not be empty"))
+        );
+    }
+
+    /// Warnings about the policy section. Other sections may warn too, for
+    /// example about the audit key, and these tests are about policy only.
+    fn policy_warnings(report: &ValidationReport) -> Vec<&Diagnostic> {
+        report
+            .of_severity(Severity::Warning)
+            .into_iter()
+            .filter(|d| d.path.starts_with("policy"))
+            .collect()
+    }
+
+    #[test]
     fn deny_rules_on_paths_draw_a_warning() {
         let config = parse(
             "policy:
@@ -912,9 +997,25 @@ policy:
 ",
         );
         let report = validate(&config, ValidationMode::Serve);
-        let warnings = report.of_severity(Severity::Warning);
+        let warnings = policy_warnings(&report);
         assert_eq!(warnings.len(), 1, "{report}");
         assert_eq!(warnings[0].path, "policy.rules[0]");
+    }
+
+    #[test]
+    fn a_deny_on_args_alone_draws_a_warning() {
+        let config = parse(
+            "policy:
+  rules:
+    - id: deny-write
+      effect: deny
+      args: {mode: write}
+",
+        );
+        let report = validate(&config, ValidationMode::Serve);
+        let warnings = policy_warnings(&report);
+        assert_eq!(warnings.len(), 1, "{report}");
+        assert!(warnings[0].message.contains("exactly"));
     }
 
     #[test]
@@ -928,7 +1029,7 @@ policy:
 ",
         );
         let report = validate(&config, ValidationMode::Serve);
-        let warnings = report.of_severity(Severity::Warning);
+        let warnings = policy_warnings(&report);
         assert_eq!(warnings.len(), 1, "{report}");
         assert!(warnings[0].message.contains("Wasm tools"));
     }
@@ -938,7 +1039,7 @@ policy:
         let config = parse("policy:\n  default: allow\n  dry_run: true\n");
         let report = validate(&config, ValidationMode::DryRun);
         assert!(report.is_ok(), "{report}");
-        assert_eq!(report.of_severity(Severity::Warning).len(), 1);
+        assert_eq!(policy_warnings(&report).len(), 1);
     }
 
     #[test]

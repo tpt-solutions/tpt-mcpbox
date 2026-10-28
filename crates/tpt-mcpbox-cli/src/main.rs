@@ -19,7 +19,7 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use tpt_mcpbox_config::load;
-use tpt_mcpbox_config::model::{LogLevel, LoggingConfig};
+use tpt_mcpbox_config::model::{LogLevel, LoggingConfig, SecretBinding};
 use tpt_mcpbox_config::secrets::{self, SecretStore, SourceKind};
 use tpt_mcpbox_config::validate::{self, Severity, ValidationMode};
 
@@ -188,8 +188,9 @@ enum AuditCommand {
         /// Log file to check. Defaults to `audit.path` from the configuration.
         #[arg(value_name = "PATH")]
         log: Option<PathBuf>,
-        /// Configuration to read `audit.path` from when PATH is omitted;
-        /// discovered from the working directory when omitted.
+        /// Configuration to read `audit.path` from when PATH is omitted, and
+        /// `audit.key_env` from for a keyed log. Discovered from the working
+        /// directory when omitted.
         #[arg(short, long, value_name = "CONFIG")]
         config: Option<PathBuf>,
     },
@@ -495,18 +496,26 @@ fn init_logging(settings: &LoggingConfig) {
 /// A broken chain is an error, so the exit code is non-zero and scripts can
 /// depend on it.
 fn audit_verify_command(log: Option<&Path>, config: Option<&Path>) -> Result<ExitCode, String> {
-    let path = match log {
-        Some(path) => path.to_path_buf(),
-        None => {
-            let cwd = std::env::current_dir()
-                .map_err(|error| format!("cannot read the working directory: {error}"))?;
-            let (config_path, _) = load::discover(config, &|name| std::env::var(name).ok(), &cwd)
-                .map_err(|error| error.to_string())?;
-            let loaded = load::load_file(&config_path).map_err(|error| error.to_string())?;
-            // Relative audit paths are relative to the configuration file.
-            let base = config_path.parent().unwrap_or(Path::new("."));
-            base.join(&loaded.config.audit.path)
-        }
+    // The configuration gives the path when none is passed, and the chain key
+    // when the log is keyed. A log passed alone is verified unkeyed.
+    let mut base = PathBuf::from(".");
+    let mut configured_path = None;
+    let mut key_env = None;
+    if log.is_none() || config.is_some() {
+        let cwd = std::env::current_dir()
+            .map_err(|error| format!("cannot read the working directory: {error}"))?;
+        let (config_path, _) = load::discover(config, &|name| std::env::var(name).ok(), &cwd)
+            .map_err(|error| error.to_string())?;
+        let loaded = load::load_file(&config_path).map_err(|error| error.to_string())?;
+        // Relative audit paths and the `.env` file are relative to the config.
+        base = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        configured_path = Some(base.join(&loaded.config.audit.path));
+        key_env = loaded.config.audit.key_env.clone();
+    }
+    let path = match (log, configured_path) {
+        (Some(path), _) => path.to_path_buf(),
+        (None, Some(path)) => path,
+        (None, None) => return Err("no audit log given".to_owned()),
     };
 
     // An absent file would verify as an empty log, which is not the same thing
@@ -515,7 +524,28 @@ fn audit_verify_command(log: Option<&Path>, config: Option<&Path>) -> Result<Exi
         return Err(format!("no audit log at {}", path.display()));
     }
 
-    let report = tpt_mcpbox_audit::verify(&path).map_err(|error| error.to_string())?;
+    let key = match key_env {
+        Some(name) => {
+            let bindings = [SecretBinding {
+                env: name.clone(),
+                header: String::new(),
+                prefix: None,
+                hosts: Vec::new(),
+            }];
+            let store = SecretStore::from_dotenv_file(bindings, &base.join(".env"))
+                .map_err(|error| error.to_string())?;
+            let secret = store
+                .get(&name)
+                .ok_or_else(|| format!("audit key secret `{name}` is not set"))?;
+            Some(secret.expose().as_bytes().to_vec())
+        }
+        None => None,
+    };
+    let report = match &key {
+        Some(key) => tpt_mcpbox_audit::verify_keyed(&path, key),
+        None => tpt_mcpbox_audit::verify(&path),
+    }
+    .map_err(|error| error.to_string())?;
     println!(
         "audit log {}: {} entries verified, head {}",
         path.display(),
@@ -595,6 +625,37 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         std::fs::write(&path, text.replace("echo", "rm")).unwrap();
         assert!(audit_verify_command(Some(&path), None).is_err());
+    }
+
+    #[test]
+    fn a_keyed_log_verifies_through_the_config_and_its_dotenv_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("tpt-mcpbox.yaml");
+        std::fs::write(
+            &config,
+            "version: 1
+audit:
+  path: audit.jsonl
+  key_env: MCPBOX_AUDIT_KEY
+",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            "MCPBOX_AUDIT_KEY=test-key
+",
+        )
+        .unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let log = tpt_mcpbox_audit::AuditLog::open_keyed(&path, b"test-key").unwrap();
+        log.append("tool_call", serde_json::json!({ "tool": "echo" }))
+            .unwrap();
+        drop(log);
+
+        assert!(audit_verify_command(None, Some(&config)).is_ok());
+        // Without the key the same log is not accepted.
+        std::fs::write(dir.path().join(".env"), "").unwrap();
+        assert!(audit_verify_command(None, Some(&config)).is_err());
     }
 
     fn policy_fixture(dir: &Path) -> PathBuf {

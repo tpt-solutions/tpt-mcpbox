@@ -39,13 +39,13 @@ accuracy.
 | SR-07 | A relative `policy.rego` was resolved against the working directory | Medium | Fixed |
 | SR-08 | Secret headers are injected into requests to every allowlisted host of the tool | Medium | Fixed (opt-in: set `hosts`) |
 | SR-09 | The memory limit applies per linear memory, and four are allowed | Medium | Fixed |
-| SR-10 | `Runtime::self_test` is never run at startup | Medium | Open (doc corrected) |
-| SR-11 | A write grant with a glob makes the whole directory writable (R4 for writes) | Medium | Open (doc corrected) |
+| SR-10 | `Runtime::self_test` is never run at startup | Medium | Fixed |
+| SR-11 | A write grant with a glob makes the whole directory writable (R4 for writes) | Medium | Fixed |
 | SR-12 | Rego can allow a call the DSL has no rule for; the policy guide said it could only tighten | Medium | Doc corrected; behaviour accepted |
 | SR-13 | Per-tool limits are registered under the config name but looked up by exposed name | Medium | Fixed |
 | SR-14 | Per-client limits are never configured | Medium | Open (doc corrected) |
 | SR-15 | HTTP upstream response bodies and SSE buffers are not size-capped | Medium | Fixed |
-| SR-16 | `deny` rules on `args` use exact JSON equality and are easy to step around | Medium | Open |
+| SR-16 | `deny` rules on `args` use exact JSON equality and are easy to step around | Medium | Fixed (documented, warned) |
 | SR-17 | Userinfo in an outbound URL was accepted and judged on the host alone | Low | Fixed |
 | SR-18 | IPv6 loopback Origins with a port were refused | Low | Fixed |
 | SR-19 | A tool's rate token is spent even when the client gate then refuses the call | Low | Fixed |
@@ -53,7 +53,7 @@ accuracy.
 | SR-21 | Epoch ticker spawn failure is ignored, which would disable timeouts | Low | Fixed |
 | SR-22 | Numeric IPv4 forms (`2130706433`, `127.1`) pass host normalisation | Low | Fixed |
 | SR-23 | The local overlay can add an HTTP listener | Low | Fixed |
-| SR-24 | The audit hash chain is unkeyed: anyone who can write the file can rebuild it | Info | Open (doc corrected) |
+| SR-24 | The audit hash chain is unkeyed: anyone who can write the file can rebuild it | Info | Fixed (opt-in: `audit.key_env`) |
 | SR-25 | Prompt names are not part of the policy input | Info | Fixed |
 | SR-26 | Upstream secret headers are not marked sensitive; secret copies are not zeroised | Info | Partly fixed (marking done) |
 | SR-27 | Non-goals, transports, bearer check, body cap, origin check, audit-before-dispatch | — | Hold |
@@ -191,11 +191,17 @@ Host-side buffers are still not counted.
 
 **Fix:** `memories(1)` if the components allow it, or divide the budget.
 
-### SR-10: the startup self-test is not run (medium, open)
+### SR-10: the startup self-test is not run (medium, fixed)
 
 `Runtime::self_test` is only called from `tests/sandbox.rs`. The security model
 said it runs at startup. **Doc corrected.** Fix: embed the probe module and run
 it in `build_router`.
+
+**Fixed:** the probe is a prebuilt component committed as
+`crates/tpt-mcpbox-runtime/assets/probe.wasm`, with its SHA-256 pinned in
+`probe.sha256` and checked by a test. `serve` runs the self-test on a blocking
+thread before it loads any tool, and refuses to start if the probe gets through
+a file, the network or the environment. Rebuild steps are in `probe.rs`.
 
 ### SR-11: write grants widen to the whole directory (medium, open)
 
@@ -204,6 +210,11 @@ R4 also applies to writes: a write grant of `workspace/*.log` makes all of
 read grant upgrades that preopen to writable. **Doc corrected** in R4. Fix:
 refuse write grants whose last segment is a wildcard, or document the rule in
 the configuration reference.
+
+**Fixed:** a write grant must be a directory, or a directory tree ending in
+`/**`. Any other wildcard, such as `workspace/*.log` or `**`, is refused at load.
+Read grants keep the old rule and still widen to their fixed directory (R4).
+Test: `write_grants_must_be_a_directory_tree`.
 
 ### SR-12: Rego can loosen the policy (medium, doc corrected)
 
@@ -242,12 +253,16 @@ timeout. `max_line_bytes` only applies to stdio.
 `MAX_REPLY_BYTES` (16 MiB) is refused as a transport error. Tests:
 `oversized_json_reply_is_refused`, `oversized_sse_event_is_refused`.
 
-### SR-16: `args` deny rules are exact JSON equality (medium, open)
+### SR-16: `args` deny rules are exact JSON equality (medium, fixed)
 
 `"Write"` does not equal `"write"`, `1.0` does not equal `1`, and missing keys or
 non-object arguments never match. A deny keyed only on `args` is easy to step
-around. Fix: document it in the policy guide; warn on deny rules that only use
-`args`.
+around.
+
+**Fixed:** the policy guide states the rule, and validation warns on any deny
+rule that matches only on `args` (test `a_deny_on_args_alone_draws_a_warning`).
+Matching args case-insensitively or by pattern would change the policy language,
+so it is left as it is.
 
 ### SR-17: userinfo in outbound URLs (low, fixed)
 
@@ -281,9 +296,12 @@ loopback. **Fixed** in `protocol/src/transport/http.rs`, with cases in
 - **SR-23 (fixed):** the `tpt-mcpbox.local.yaml` overlay can add transports and set
   `server.http` when the primary file has none. A non-loopback bind still needs
   a bearer token. Fix: take only `tools` and `upstreams` from the overlay.
-- **SR-24:** the audit chain uses an unkeyed SHA-256, so it detects edits by
-  someone who does not recompute the chain, not by someone who can rewrite the
-  whole file. **Doc corrected** in R9.
+- **SR-24 (fixed, opt-in):** the audit chain used an unkeyed SHA-256, so it
+  detected edits only by someone who did not recompute the chain. `audit.key_env`
+  keys it with HMAC-SHA256, and verification needs the key. Without it the
+  loader warns. Test: `rebuilding_the_chain_without_the_key_is_detected`. The
+  default stays unkeyed, so a config with no key still works. Truncation of the
+  newest entries is still open (R9).
 - **SR-25 (fixed):** `prompts/get` had no name in the policy input, so a rule
   could not allow one prompt and not another. `PolicyInput` and `Rule` now carry
   `prompt`, and `prompts/get` sets it. Test: `prompt_rules_match_the_prompt_name_and_never_a_tool_name`.

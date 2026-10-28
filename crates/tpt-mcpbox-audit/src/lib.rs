@@ -12,7 +12,7 @@
 
 pub mod chain;
 
-pub use chain::{AuditError, AuditLog, Entry, GENESIS, VerifyReport, verify};
+pub use chain::{AuditError, AuditLog, Entry, GENESIS, VerifyReport, verify, verify_keyed};
 
 /// Crate version, surfaced by `mcpbox --version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

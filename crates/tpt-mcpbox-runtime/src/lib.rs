@@ -25,12 +25,14 @@ mod bindings;
 mod error;
 mod module;
 mod outbound;
+mod probe;
 mod runtime;
 mod sandbox;
 mod tool;
 
 pub use error::ToolError;
 pub use outbound::HostCheck;
+pub use probe::{PROBE_SHA256, PROBE_WASM};
 pub use runtime::{CancelToken, Runtime};
 pub use tool::{
     DEFAULT_MAX_CONCURRENT, DEFAULT_MEMORY_BYTES, DEFAULT_PAYLOAD_BYTES, DEFAULT_RECYCLE_AFTER,

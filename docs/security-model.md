@@ -102,9 +102,12 @@ Tools run as WebAssembly components under wasmtime with WASI Preview 2.
 - Every `tools/call` writes a `start` record before dispatch and a `finish`
   record with outcome, duration and rule id. If the `start` record cannot be
   written, the call is refused.
-- Records are JSON lines. Each entry carries the SHA-256 hash of its predecessor,
-  so editing or deleting an entry breaks the chain. `tpt-mcpbox audit verify`
-  reports the first break and exits non-zero.
+- Records are JSON lines. Each entry carries the hash of its predecessor, so
+  editing or deleting an entry breaks the chain. With `audit.key_env` set the hash
+  is HMAC-SHA256 under that secret, so rebuilding the chain needs the key.
+  Without it, the hash is plain SHA-256 and anyone who can write the file can
+  rebuild the chain. `tpt-mcpbox audit verify` reports the first break and exits
+  non-zero.
 - Argument **values** are never recorded, only argument key names.
 - A second writer on the same log is refused by an OS file lock.
 
@@ -155,7 +158,7 @@ v0.1.0.
 | R6 | OCI pulls are refused (`ToolError::Unsupported`), so there is no supply-chain path to audit yet. | Open (feature gap) |
 | R7 | Upstream responses are scanned only against the per-upstream `scan` rules an operator writes, and prompts are not scanned. Known secret values are redacted. | Partly mitigated |
 | R8 | Client-side rate-limit state is never evicted, so memory grows with the number of distinct session ids. | Open |
-| R9 | Truncation of the newest audit entries is not detected without an external head checkpoint. The chain hash is unkeyed, so someone who can write the file can also recompute the whole chain. | Open |
+| R9 | Truncation of the newest audit entries is not detected without an external head checkpoint. Without `audit.key_env` the chain hash is unkeyed, so someone who can write the file can also recompute the whole chain. | Open (keying is opt-in) |
 | R10 | Only one shared bearer token exists. There is no per-client token and no rotation without restart. | Open |
 | R11 | Fuzz targets cover the JSON-RPC parser, config parser and policy input, and run weekly in CI. The WIT boundary has no target yet. | Partly mitigated |
 

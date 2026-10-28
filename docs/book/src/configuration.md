@@ -49,6 +49,9 @@ tools:
       max_argument_bytes: 65536
 ```
 
+A write grant must name a directory, or a directory tree ending in `/**`; a
+wildcard anywhere else, such as `workspace/*.log`, is refused at load.
+
 Set `sha256` once the module is built (`sha256sum file.wasm`). An unpinned
 module still loads, with a warning that prints its digest.
 
@@ -141,7 +144,14 @@ policy:
 audit:
   enabled: true
   path: .mcpbox/audit.log   # relative paths resolve against the config file
+  key_env: MCPBOX_AUDIT_KEY # secret that keys the chain (HMAC-SHA256)
 ```
+
+Set `key_env` to the name of a secret, in the environment or the `.env` file. The
+chain is then keyed, and `tpt-mcpbox audit verify --config` needs the same secret.
+Without a key, anyone who can write the log can rebuild its whole chain, and the
+loader warns. A log written with a key cannot be opened without it, and the
+reverse holds too.
 
 `sign` and `max_segment_bytes` are accepted by the schema but not acted on yet.
 See [Operations](operations.md).

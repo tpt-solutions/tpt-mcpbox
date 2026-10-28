@@ -8,6 +8,12 @@
 //! removing or reordering any entry breaks every hash after it. The first
 //! entry chains from [`GENESIS`].
 //!
+//! Keying: by default the hash is plain SHA-256, so anyone who can write the
+//! file can recompute the whole chain. With a key ([`AuditLog::open_keyed`]) each
+//! hash is HMAC-SHA256 under that key, and rebuilding the chain needs the key
+//! too (SR-24). A keyed log cannot be verified without its key, and an unkeyed
+//! one cannot be opened with one.
+//!
 //! Limits: a truncation of the newest entries leaves a valid shorter chain and
 //! is not detected here. Detecting it needs the head hash recorded somewhere
 //! else, which is a later step.
@@ -18,9 +24,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// `prev` value of the first entry: 64 zero hex digits.
 pub const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -129,10 +138,12 @@ struct Head {
     file: File,
     next_seq: u64,
     prev: String,
+    /// The key the chain is hashed under, or `None` for plain SHA-256.
+    key: Option<Vec<u8>>,
 }
 
 impl AuditLog {
-    /// Opens or creates the log at `path`.
+    /// Opens or creates the log at `path`, hashed with plain SHA-256.
     ///
     /// The existing chain is verified first. A broken log is refused rather than
     /// extended, because new entries would sit on top of tampered history.
@@ -142,14 +153,27 @@ impl AuditLog {
     /// Returns [`AuditError::Broken`] when the existing chain does not verify,
     /// or an I/O error when the file cannot be opened.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, AuditError> {
-        let path = path.into();
+        Self::open_with(path.into(), None)
+    }
+
+    /// Opens or creates the log at `path`, hashed under `key` (HMAC-SHA256).
+    ///
+    /// # Errors
+    ///
+    /// As [`AuditLog::open`]. An unkeyed log, or one written under another key,
+    /// is refused as broken.
+    pub fn open_keyed(path: impl Into<PathBuf>, key: &[u8]) -> Result<Self, AuditError> {
+        Self::open_with(path.into(), Some(key.to_vec()))
+    }
+
+    fn open_with(path: PathBuf, key: Option<Vec<u8>>) -> Result<Self, AuditError> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
         // Claim the log before reading it, so no other writer can change the
         // chain between verification and the first append.
         let lock = LockFile::acquire(&path)?;
-        let report = verify(&path)?;
+        let report = verify_with(&path, key.as_deref())?;
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         Ok(Self {
             path,
@@ -157,6 +181,7 @@ impl AuditLog {
                 file,
                 next_seq: report.entries,
                 prev: report.head,
+                key,
             }),
             _lock: lock,
         })
@@ -177,7 +202,14 @@ impl AuditLog {
     pub fn append(&self, kind: &str, data: Value) -> Result<Entry, AuditError> {
         let mut head = lock(&self.state);
         let ts_ms = now_ms();
-        let hash = compute_hash(head.next_seq, ts_ms, &head.prev, kind, &data)?;
+        let hash = compute_hash(
+            head.key.as_deref(),
+            head.next_seq,
+            ts_ms,
+            &head.prev,
+            kind,
+            &data,
+        )?;
         let entry = Entry {
             seq: head.next_seq,
             ts_ms,
@@ -217,6 +249,21 @@ impl AuditLog {
 /// Returns [`AuditError::Broken`] at the first entry whose sequence number,
 /// link or hash does not match, or an I/O / decode error.
 pub fn verify(path: &Path) -> Result<VerifyReport, AuditError> {
+    verify_with(path, None)
+}
+
+/// Checks every entry in the log at `path` under `key`, as written by
+/// [`AuditLog::open_keyed`].
+///
+/// # Errors
+///
+/// As [`verify`]. A log written without the key, or under another key, fails
+/// at its first entry.
+pub fn verify_keyed(path: &Path, key: &[u8]) -> Result<VerifyReport, AuditError> {
+    verify_with(path, Some(key))
+}
+
+fn verify_with(path: &Path, key: Option<&[u8]>) -> Result<VerifyReport, AuditError> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -247,6 +294,7 @@ pub fn verify(path: &Path) -> Result<VerifyReport, AuditError> {
             });
         }
         let hash = compute_hash(
+            key,
             entry.seq,
             entry.ts_ms,
             &entry.prev,
@@ -271,6 +319,7 @@ pub fn verify(path: &Path) -> Result<VerifyReport, AuditError> {
 }
 
 fn compute_hash(
+    key: Option<&[u8]>,
     seq: u64,
     ts_ms: u64,
     prev: &str,
@@ -279,15 +328,24 @@ fn compute_hash(
 ) -> Result<String, AuditError> {
     // Field order is fixed here, and `data` is hashed in canonical form, so the
     // digest never depends on how the caller built the JSON object.
-    let mut hasher = Sha256::new();
-    hasher.update(seq.to_be_bytes());
-    hasher.update(ts_ms.to_be_bytes());
-    hasher.update(prev.as_bytes());
-    hasher.update([0u8]);
-    hasher.update(kind.as_bytes());
-    hasher.update([0u8]);
-    hasher.update(serde_json::to_vec(&canonical(data))?);
-    Ok(hex::encode(hasher.finalize()))
+    let mut message = Vec::new();
+    message.extend_from_slice(&seq.to_be_bytes());
+    message.extend_from_slice(&ts_ms.to_be_bytes());
+    message.extend_from_slice(prev.as_bytes());
+    message.push(0u8);
+    message.extend_from_slice(kind.as_bytes());
+    message.push(0u8);
+    message.extend_from_slice(&serde_json::to_vec(&canonical(data))?);
+    let digest = match key {
+        None => Sha256::digest(&message).to_vec(),
+        Some(key) => {
+            // HMAC accepts a key of any length, so this cannot fail.
+            let mut mac = HmacSha256::new_from_slice(key).expect("HMAC takes any key length");
+            mac.update(&message);
+            mac.finalize().into_bytes().to_vec()
+        }
+    };
+    Ok(hex::encode(digest))
 }
 
 /// Rebuilds `value` with every object's keys sorted, at every depth.
@@ -351,6 +409,86 @@ mod tests {
         let report = verify(&path).unwrap();
         assert_eq!(report.entries, 3);
         assert_ne!(report.head, GENESIS);
+    }
+
+    #[test]
+    fn a_keyed_log_verifies_only_under_its_key() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        {
+            let log = AuditLog::open_keyed(&path, b"key-one").unwrap();
+            log.append("tool_call", json!({ "tool": "echo" })).unwrap();
+        }
+        assert_eq!(verify_keyed(&path, b"key-one").unwrap().entries, 1);
+        assert!(verify(&path).is_err(), "no key must not verify");
+        assert!(
+            verify_keyed(&path, b"other").is_err(),
+            "wrong key must not verify"
+        );
+    }
+
+    #[test]
+    fn an_unkeyed_log_is_refused_when_opened_with_a_key() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        write_three(&path);
+        assert!(matches!(
+            AuditLog::open_keyed(&path, b"key"),
+            Err(AuditError::Broken { .. })
+        ));
+    }
+
+    #[test]
+    fn rebuilding_the_chain_without_the_key_is_detected() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        {
+            let log = AuditLog::open_keyed(&path, b"key").unwrap();
+            log.append("tool_call", json!({ "tool": "echo" })).unwrap();
+            log.append("policy_decision", json!({ "effect": "allow" }))
+                .unwrap();
+        }
+
+        // Forge the first entry and rebuild every hash with plain SHA-256, as an
+        // editor without the key could.
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut entries: Vec<Entry> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        entries[0].data = json!({ "tool": "forged" });
+        let mut prev = GENESIS.to_owned();
+        for entry in &mut entries {
+            entry.prev = prev.clone();
+            entry.hash = compute_hash(
+                None,
+                entry.seq,
+                entry.ts_ms,
+                &entry.prev,
+                &entry.kind,
+                &entry.data,
+            )
+            .unwrap();
+            prev = entry.hash.clone();
+        }
+        let forged: String = entries
+            .iter()
+            .map(|entry| {
+                serde_json::to_string(entry).unwrap()
+                    + "
+"
+            })
+            .collect();
+        std::fs::write(&path, forged).unwrap();
+
+        assert!(
+            verify(&path).is_ok(),
+            "the plain rebuild is self-consistent"
+        );
+        assert!(matches!(
+            verify_keyed(&path, b"key"),
+            Err(AuditError::Broken { seq: 0, .. })
+        ));
     }
 
     #[test]
@@ -421,8 +559,8 @@ mod tests {
 
     #[test]
     fn hash_does_not_depend_on_object_key_order() {
-        let a = compute_hash(0, 1, GENESIS, "k", &json!({ "a": 1, "b": 2 })).unwrap();
-        let b = compute_hash(0, 1, GENESIS, "k", &json!({ "b": 2, "a": 1 })).unwrap();
+        let a = compute_hash(None, 0, 1, GENESIS, "k", &json!({ "a": 1, "b": 2 })).unwrap();
+        let b = compute_hash(None, 0, 1, GENESIS, "k", &json!({ "b": 2, "a": 1 })).unwrap();
         assert_eq!(a, b);
     }
 }

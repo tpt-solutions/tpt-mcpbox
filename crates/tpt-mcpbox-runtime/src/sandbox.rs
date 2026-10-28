@@ -67,6 +67,14 @@ pub(crate) fn plan(tool: &str, caps: &Capabilities, base: &Path) -> Result<WasiP
                 "filesystem grant `{glob}` names no fixed directory"
             ))
         })?;
+        // The preopen is the whole fixed directory, so a write grant with any
+        // wildcard other than a trailing `/**` would make all of it writable
+        // (SR-11). Such a grant is refused rather than widened silently.
+        if writable && !is_directory_tree(glob) {
+            return Err(invalid(format!(
+                "write grant `{glob}` would make all of `{fixed}` writable; use a directory, or `{fixed}/**`"
+            )));
+        }
         let host = base.join(&fixed);
         let host = std::fs::canonicalize(&host).map_err(|e| {
             invalid(format!(
@@ -150,6 +158,16 @@ pub(crate) fn build_ctx(tool: &str, plan: &WasiPlan) -> Result<WasiCtx, ToolErro
     Ok(builder.build())
 }
 
+/// `true` when a glob names a directory and everything under it: no wildcard
+/// before the trailing `/**`, or no wildcard at all.
+fn is_directory_tree(glob: &str) -> bool {
+    let Some(normalised) = normalize_path(glob) else {
+        return false;
+    };
+    let stem = normalised.strip_suffix("/**").unwrap_or(&normalised);
+    !stem.contains(GLOB_META)
+}
+
 /// The fixed directory a glob names: its segments before the first wildcard.
 /// `None` when nothing is fixed, as with `**/*.md` or `./*`, because that would
 /// grant the whole working directory.
@@ -219,6 +237,16 @@ mod tests {
             fixed_directory("workspace/out").as_deref(),
             Some("workspace/out")
         );
+    }
+
+    #[test]
+    fn write_grants_must_be_a_directory_tree() {
+        assert!(is_directory_tree("workspace/output/**"));
+        assert!(is_directory_tree("workspace/output"));
+        assert!(is_directory_tree("workspace/**"));
+        assert!(!is_directory_tree("workspace/*.log"));
+        assert!(!is_directory_tree("workspace/**/*.md"));
+        assert!(!is_directory_tree("**"));
     }
 
     #[test]

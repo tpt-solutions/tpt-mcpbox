@@ -65,7 +65,10 @@ Matching rules:
 - `paths`: glob, applied to the normalised path. Traversal such as `..` does not
   escape a match.
 - `uris`: glob, applied to normalised URIs.
-- `args`: each key must equal the given value.
+- `args`: each key must equal the given value, by exact JSON equality. `"Write"`
+  is not `"write"`, `1.0` is not `1`, and a missing key never matches. A deny that
+  matches only on `args` is easy to step around, so name the tool too; the loader
+  warns about such a rule.
 
 Constraints on an allow apply to the call: `quota` (sliding window), and the
 memory and time limits. When several rules allow a call, the tightest limits win.

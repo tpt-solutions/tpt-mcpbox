@@ -46,7 +46,7 @@ use tpt_mcpbox_proxy::{
 };
 use tpt_mcpbox_router::mcp::ToolHandler;
 use tpt_mcpbox_router::{Exposure, Limiter, Limits, Metrics, Router};
-use tpt_mcpbox_runtime::Runtime;
+use tpt_mcpbox_runtime::{PROBE_WASM, Runtime};
 
 use crate::VERSION;
 
@@ -60,6 +60,22 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// # Errors
 ///
 /// Returns a message naming the first thing that prevented startup.
+/// Runs the sandbox probe before anything else is loaded. If the runtime does
+/// not refuse the probe's file, network and environment access, the hub does
+/// not start (SR-10).
+fn startup_self_test(runtime: &Runtime) -> Result<(), String> {
+    let probe_file = std::env::temp_dir().join(format!("tpt-mcpbox-probe-{}", std::process::id()));
+    std::fs::write(&probe_file, b"self-test")
+        .map_err(|error| format!("self-test: cannot write its probe file: {error}"))?;
+    let result = runtime
+        .self_test(PROBE_WASM, &probe_file)
+        .map_err(|error| format!("startup self-test failed: {error}"));
+    // The file only held a marker, so a failure to remove it is not worth
+    // stopping the hub for.
+    let _ = std::fs::remove_file(&probe_file);
+    result
+}
+
 pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, String> {
     if !config.server.has_stdio() && !config.server.has_http() {
         return Err(
@@ -100,6 +116,7 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
                 .flat_map(|u| u.secrets.clone()),
         )
         .chain(http_token_binding.clone())
+        .chain(config.audit.key_binding())
         .collect();
     let secrets = SecretStore::from_dotenv_file(bindings, &base.join(".env"))
         .map_err(|error| error.to_string())?;
@@ -122,9 +139,17 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
 
     let audit = if config.audit.enabled {
         let path = base.join(&config.audit.path);
-        Some(Arc::new(
-            AuditLog::open(&path).map_err(|error| format!("audit log: {error}"))?,
-        ))
+        let log = match config.audit.key_env.as_deref() {
+            Some(name) => {
+                let key = secrets
+                    .get(name)
+                    .ok_or_else(|| format!("audit key secret `{name}` is not set"))?;
+                AuditLog::open_keyed(&path, key.expose().as_bytes())
+            }
+            None => AuditLog::open(&path),
+        }
+        .map_err(|error| format!("audit log: {error}"))?;
+        Some(Arc::new(log))
     } else {
         None
     };
@@ -148,7 +173,13 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
         router = router.with_request_timeout(limit);
     }
 
-    let runtime = Runtime::new().map_err(|error| error.to_string())?;
+    let runtime = Arc::new(Runtime::new().map_err(|error| error.to_string())?);
+    // The probe runs wasmtime-wasi's blocking bridge, which cannot start inside
+    // a tokio worker, so it goes to a blocking thread.
+    let probe = Arc::clone(&runtime);
+    tokio::task::spawn_blocking(move || startup_self_test(&probe))
+        .await
+        .map_err(|error| format!("startup self-test: {error}"))??;
     for tool in config.tools.iter().filter(|t| t.enabled) {
         let loaded = Arc::new(
             runtime

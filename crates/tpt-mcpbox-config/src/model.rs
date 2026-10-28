@@ -670,6 +670,24 @@ pub struct AuditConfig {
     #[serde(default = "default_segment_bytes", with = "byte_size_required")]
     #[schemars(with = "String")]
     pub max_segment_bytes: u64,
+    /// Name of the secret that keys the chain with HMAC-SHA256. Without a key,
+    /// anyone who can write the log can rebuild it (SR-24). Set this for any log
+    /// that has to be trusted, and keep the secret out of the log's reach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_env: Option<String>,
+}
+
+impl AuditConfig {
+    /// The secret binding that supplies the chain key, if one is configured.
+    #[must_use]
+    pub fn key_binding(&self) -> Option<SecretBinding> {
+        self.key_env.as_ref().map(|env| SecretBinding {
+            env: env.clone(),
+            header: String::new(),
+            prefix: None,
+            hosts: Vec::new(),
+        })
+    }
 }
 
 fn default_audit_path() -> PathBuf {
@@ -687,6 +705,7 @@ impl Default for AuditConfig {
             path: default_audit_path(),
             sign: false,
             max_segment_bytes: default_segment_bytes(),
+            key_env: None,
         }
     }
 }
