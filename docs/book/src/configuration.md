@@ -82,6 +82,7 @@ upstreams:
       rename: { summarise: summary }
     resources:
       deny: ["secret://*"]         # by URI; also hides resource templates
+      describe: { "docs://guide": "The onboarding guide" }
 ```
 
 Renames apply before the prefix. Policy rules match the name the agent calls,
@@ -89,8 +90,9 @@ so an allow for the upstream's tool is written as `kb__find`, not `search_docs`.
 The upstream itself is still called by its own name, and two upstreams that
 expose the same tool name can be allowed separately.
 Resource templates are hidden whenever `resources` is set, because a template
-can reach URIs the filter would refuse. Resource descriptions cannot be
-overridden.
+can reach URIs the filter would refuse. A resource's description can be replaced
+under `resources.describe`, keyed by its URI, and an override for a URI the
+upstream does not list is refused at startup.
 
 Responses can be scanned on the way back to the agent. Each rule is a regular
 expression, run in order over tool text, text resources and every string in

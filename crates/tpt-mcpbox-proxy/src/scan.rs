@@ -11,6 +11,7 @@ use regex::{NoExpand, Regex};
 use serde_json::Value;
 use tpt_mcpbox_config::{ScanAction, ScanRule};
 use tpt_mcpbox_protocol::content::{Content, ResourceContents};
+use tpt_mcpbox_protocol::prompts::GetPromptResult;
 use tpt_mcpbox_protocol::resources::ReadResourceResult;
 use tpt_mcpbox_protocol::tools::CallToolResult;
 
@@ -66,16 +67,50 @@ impl ResponseScanner {
             return Ok(());
         }
         for content in &mut result.content {
-            match content {
-                Content::Text(text) => text.text = self.scan_str(&text.text)?.into_owned(),
-                Content::Resource(ResourceContents::Text(body)) => {
-                    body.text = self.scan_str(&body.text)?.into_owned();
-                }
-                _ => {}
-            }
+            self.scan_content(content)?;
         }
         if let Some(structured) = &mut result.structured_content {
             self.scan_value(structured)?;
+        }
+        Ok(())
+    }
+
+    /// Scans a `prompts/get` result in place: the description and every message.
+    /// Same rules as [`ResponseScanner::scan_tool_result`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Refused`] when a `refuse` rule matches.
+    pub fn scan_prompt_result(&self, result: &mut GetPromptResult) -> Result<(), Refused> {
+        if self.rules.is_empty() {
+            return Ok(());
+        }
+        if let Some(description) = &mut result.description {
+            *description = self.scan_str(description)?.into_owned();
+        }
+        for message in &mut result.messages {
+            self.scan_content(&mut message.content)?;
+        }
+        Ok(())
+    }
+
+    /// Scans the text carried by one content block: its text, its embedded
+    /// text resource, and a resource link's title and description.
+    fn scan_content(&self, content: &mut Content) -> Result<(), Refused> {
+        match content {
+            Content::Text(text) => text.text = self.scan_str(&text.text)?.into_owned(),
+            Content::Resource(ResourceContents::Text(body)) => {
+                body.text = self.scan_str(&body.text)?.into_owned();
+            }
+            Content::ResourceLink(link) => {
+                if let Some(title) = &mut link.title {
+                    *title = self.scan_str(title)?.into_owned();
+                }
+                if let Some(description) = &mut link.description {
+                    *description = self.scan_str(description)?.into_owned();
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -145,6 +180,8 @@ impl ResponseScanner {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use tpt_mcpbox_protocol::Role;
+    use tpt_mcpbox_protocol::prompts::PromptMessage;
 
     use super::*;
 
@@ -154,6 +191,40 @@ mod tests {
             pattern: pattern.to_owned(),
             action,
         }
+    }
+
+    #[test]
+    fn prompt_messages_and_resource_links_are_scanned() {
+        let scanner =
+            ResponseScanner::new(&[rule("aws_key", "AKIA[0-9A-Z]{16}", ScanAction::Redact)])
+                .unwrap();
+        let key = "AKIAABCDEFGHIJKLMNOP";
+
+        let mut prompt = GetPromptResult {
+            description: Some(format!("uses {key}")),
+            messages: vec![PromptMessage::text(Role::User, format!("key {key}"))],
+        };
+        scanner.scan_prompt_result(&mut prompt).unwrap();
+        let Content::Text(text) = &prompt.messages[0].content else {
+            panic!("a text message");
+        };
+        assert!(!text.text.contains(key));
+        assert!(prompt.description.unwrap().contains("[redacted:aws_key]"));
+
+        let mut result: CallToolResult = serde_json::from_value(json!({
+            "content": [{
+                "type": "resource_link",
+                "uri": "file:///x",
+                "name": "x",
+                "description": format!("holds {key}")
+            }]
+        }))
+        .unwrap();
+        scanner.scan_tool_result(&mut result).unwrap();
+        let Content::ResourceLink(link) = &result.content[0] else {
+            panic!("still a resource link");
+        };
+        assert!(!link.description.as_deref().unwrap().contains(key));
     }
 
     fn text_result(text: &str) -> CallToolResult {

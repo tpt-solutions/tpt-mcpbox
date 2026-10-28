@@ -507,13 +507,16 @@ pub struct ResourceFilter {
     /// URIs to hide (globs allowed).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deny: Vec<String>,
+    /// Upstream resource URI to a replacement description.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub describe: BTreeMap<String, String>,
 }
 
 impl ResourceFilter {
     /// Whether no filter is configured.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.allow.is_empty() && self.deny.is_empty()
+        self.allow.is_empty() && self.deny.is_empty() && self.describe.is_empty()
     }
 }
 

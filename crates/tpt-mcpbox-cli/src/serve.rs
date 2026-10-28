@@ -743,11 +743,28 @@ fn visible_resources(
     upstream: &UpstreamConfig,
     listed: Vec<Resource>,
 ) -> Result<Vec<Resource>, String> {
+    let uris: Vec<&str> = listed
+        .iter()
+        .map(|resource| resource.uri.as_str())
+        .collect();
+    check_known(
+        &upstream.name,
+        "resource",
+        &uris,
+        upstream.resources.describe.keys(),
+    )?;
+
     let filter = &upstream.resources;
     let visible = Visibility::new(&filter.allow, &filter.deny, &upstream.name)?;
     Ok(listed
         .into_iter()
         .filter(|resource| visible.allows(&resource.uri))
+        .map(|mut resource| {
+            if let Some(text) = filter.describe.get(&resource.uri) {
+                resource.description = Some(text.clone());
+            }
+            resource
+        })
         .collect())
 }
 
@@ -1019,6 +1036,23 @@ mod tests {
 
         let typo = upstream(json!({ "prompts": { "describe": { "sumarise": "x" } } }));
         assert!(visible_prompts(&typo, vec![prompt_named("summarise")]).is_err());
+    }
+
+    #[test]
+    fn resource_descriptions_can_be_overridden_by_uri() {
+        let config = upstream(json!({
+            "resources": { "describe": { "file:///a.txt": "The guide" } }
+        }));
+        let visible = visible_resources(
+            &config,
+            vec![resource_at("file:///a.txt"), resource_at("file:///b.txt")],
+        )
+        .unwrap();
+        assert_eq!(visible[0].description.as_deref(), Some("The guide"));
+        assert_eq!(visible[1].description, None);
+
+        let typo = upstream(json!({ "resources": { "describe": { "file:///x": "x" } } }));
+        assert!(visible_resources(&typo, vec![resource_at("file:///a.txt")]).is_err());
     }
 
     #[test]

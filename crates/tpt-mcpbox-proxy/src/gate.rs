@@ -237,7 +237,11 @@ impl PolicyGate {
             ..PolicyInput::default()
         };
         self.authorize(&input, "prompt", name)?;
-        Ok(self.connection().get_prompt(name, arguments).await?)
+        let mut result = self.connection().get_prompt(name, arguments).await?;
+        self.scanner
+            .scan_prompt_result(&mut result)
+            .map_err(|refused| ProxyError::Refused { rule: refused.rule })?;
+        Ok(result)
     }
 
     /// Checks the policy for a `completion/complete` and, if it allows it, asks
