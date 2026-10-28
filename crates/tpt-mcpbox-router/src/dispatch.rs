@@ -57,6 +57,12 @@ pub enum RouterError {
         /// Human-readable reason.
         reason: String,
     },
+    /// An upstream answer matched a `refuse` scan rule, so it was withheld.
+    #[error("upstream response refused by scan rule `{rule}`")]
+    Refused {
+        /// Name of the scan rule that matched.
+        rule: String,
+    },
     /// The upstream failed.
     #[error(transparent)]
     Upstream(UpstreamError),
@@ -95,6 +101,7 @@ impl RouterError {
             Self::Limited(Rejection::ToolRate(_) | Rejection::ClientRate(_)) => "rate_limited",
             Self::Limited(_) => "concurrency_limited",
             Self::Denied { .. } => "denied",
+            Self::Refused { .. } => "response_refused",
             Self::Upstream(_) => "upstream_error",
             Self::Tool(_) => "tool_error",
             Self::Encode(_) => "invalid_arguments",
@@ -150,6 +157,7 @@ impl From<ProxyError> for RouterError {
     fn from(err: ProxyError) -> Self {
         match err {
             ProxyError::Denied { rule_id, reason } => Self::Denied { rule_id, reason },
+            ProxyError::Refused { rule } => Self::Refused { rule },
             ProxyError::Upstream(err) => Self::Upstream(err),
         }
     }
@@ -489,8 +497,13 @@ impl Router {
         span.record("duration_ms", duration_ms);
         finish.insert("outcome".to_owned(), json!(outcome));
         finish.insert("duration_ms".to_owned(), json!(duration_ms));
-        if let Err(RouterError::Denied { rule_id, .. }) = &result {
-            span.record("rule_id", tracing::field::debug(rule_id));
+        let rule_id = match &result {
+            Err(RouterError::Denied { rule_id, .. }) => Some(rule_id.clone()),
+            Err(RouterError::Refused { rule }) => Some(Some(rule.clone())),
+            _ => None,
+        };
+        if let Some(rule_id) = rule_id {
+            span.record("rule_id", tracing::field::debug(&rule_id));
             finish.insert("rule_id".to_owned(), json!(rule_id));
         }
         span.in_scope(|| tracing::info!("request finished"));
