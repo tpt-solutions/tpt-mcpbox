@@ -15,15 +15,17 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use futures::future::join_all;
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 use crate::error::{ProtocolError, Result};
 use crate::jsonrpc::{
-    ClientMessage, ErrorCode, Id, Notification, Request, Response, ServerMessage,
+    ClientMessage, ErrorCode, Id, Incoming, Notification, Request, Response, ServerMessage,
 };
 use crate::method;
 use crate::model::{
@@ -31,7 +33,7 @@ use crate::model::{
     ListRootsResult,
 };
 use crate::session::Session;
-use crate::utilities::SetLevelRequest;
+use crate::utilities::{CancelledParams, SetLevelRequest};
 
 /// Default time budget for a server → agent request.
 pub const DEFAULT_CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -79,6 +81,9 @@ pub struct Dispatcher {
     handler: Arc<dyn Handler>,
     outbound: mpsc::UnboundedSender<ServerMessage>,
     pending: Mutex<HashMap<Id, oneshot::Sender<Response>>>,
+    /// Agent requests being served, keyed by id, so `notifications/cancelled`
+    /// can reach them. Held only for short synchronous sections.
+    inflight: StdMutex<HashMap<Id, CancellationToken>>,
     options: DispatcherOptions,
 }
 
@@ -116,6 +121,7 @@ impl Dispatcher {
                 handler,
                 outbound,
                 pending: Mutex::new(HashMap::new()),
+                inflight: StdMutex::new(HashMap::new()),
                 options,
             }),
             receiver,
@@ -161,7 +167,10 @@ impl Dispatcher {
     pub async fn dispatch(&self, message: ClientMessage) -> Option<ServerMessage> {
         match message {
             ClientMessage::Request(request) => {
-                Some(ServerMessage::Response(self.route_request(request).await))
+                let token = self.track(&request.id);
+                self.run_tracked(request, token)
+                    .await
+                    .map(ServerMessage::Response)
             }
             ClientMessage::Notification(notification) => {
                 self.route_notification(notification).await;
@@ -212,9 +221,89 @@ impl Dispatcher {
         Ok(responses)
     }
 
-    async fn route_request(&self, request: Request) -> Response {
+    /// Like [`Dispatcher::dispatch_payload`], for transports that must keep
+    /// reading while requests run (stdio). Notifications and responses are
+    /// handled inline, so a cancellation takes effect as soon as it is read.
+    /// Requests run on a spawned task and reply through the outbound channel,
+    /// in completion order.
+    ///
+    /// # Errors
+    /// Returns [`ProtocolError::Batch`] when the payload is an empty array.
+    pub async fn accept_payload(self: &Arc<Self>, payload: Value) -> Result<()> {
+        let items = match Incoming::from_value(payload)? {
+            Incoming::Single(value) => vec![value],
+            Incoming::Batch(values) => values,
+        };
+
+        let mut tracked = Vec::new();
+        for item in items {
+            match ClientMessage::from_value(item) {
+                Ok(ClientMessage::Request(request)) => {
+                    let token = self.track(&request.id);
+                    tracked.push((request, token));
+                }
+                Ok(message) => {
+                    self.dispatch(message).await;
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "rejecting malformed JSON-RPC message");
+                    let _ = self.emit(ServerMessage::Response(Response::from_error(
+                        Id::Number(0),
+                        ErrorCode::INVALID_REQUEST,
+                        "invalid JSON-RPC message",
+                    )));
+                }
+            }
+        }
+
+        if !tracked.is_empty() {
+            let dispatcher = Arc::clone(self);
+            tokio::spawn(async move {
+                let replies = join_all(
+                    tracked
+                        .into_iter()
+                        .map(|(request, token)| dispatcher.run_tracked(request, token)),
+                )
+                .await;
+                for reply in replies.into_iter().flatten() {
+                    if dispatcher.emit(ServerMessage::Response(reply)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        Ok(())
+    }
+
+    /// Registers a cancellation token for an inbound request. It must happen
+    /// before the request is served, so that a cancellation read right after
+    /// the request finds it.
+    fn track(&self, id: &Id) -> CancellationToken {
+        let token = CancellationToken::new();
+        self.inflight_map().insert(id.clone(), token.clone());
+        token
+    }
+
+    /// Serves a tracked request. Returns `None` when the agent cancelled it,
+    /// because the spec forbids a reply to a cancelled request. Cancelling drops
+    /// the handler future, which is what stops the work.
+    async fn run_tracked(&self, request: Request, token: CancellationToken) -> Option<Response> {
         let id = request.id.clone();
-        match self.serve(request).await {
+        let outcome = tokio::select! {
+            biased;
+            () = token.cancelled() => None,
+            result = self.serve(request) => Some(result),
+        };
+        self.inflight_map().remove(&id);
+
+        let result = match outcome {
+            Some(result) => result,
+            None => {
+                tracing::debug!(%id, "request cancelled by agent; no reply sent");
+                return None;
+            }
+        };
+        Some(match result {
             Ok(Some(ServerMessage::Response(response))) => response,
             // A handler that answered out-of-band leaves nothing to return here.
             Ok(Some(other)) => {
@@ -223,6 +312,31 @@ impl Dispatcher {
             }
             Ok(None) => Response::success(id, Value::Object(Default::default())),
             Err(error) => Response::failure(error.to_json_rpc().with_id(id)),
+        })
+    }
+
+    fn inflight_map(&self) -> MutexGuard<'_, HashMap<Id, CancellationToken>> {
+        self.inflight.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Cancels the in-flight request named by a `notifications/cancelled`.
+    /// Unknown ids are normal: the request may already have finished.
+    fn cancel_request(&self, params: Option<Value>) {
+        let Some(params) =
+            params.and_then(|value| serde_json::from_value::<CancelledParams>(value).ok())
+        else {
+            tracing::debug!("ignoring notifications/cancelled without a valid requestId");
+            return;
+        };
+        match self.inflight_map().get(&params.request_id) {
+            Some(token) => {
+                token.cancel();
+                tracing::debug!(id = %params.request_id, reason = ?params.reason, "agent cancelled a request");
+            }
+            None => tracing::debug!(
+                id = %params.request_id,
+                "cancellation for a request that is not in flight"
+            ),
         }
     }
 
@@ -271,8 +385,7 @@ impl Dispatcher {
     async fn route_notification(&self, notification: Notification) {
         match notification.method.as_str() {
             method::lifecycle::INITIALIZED => self.session.mark_ready().await,
-            // Cancellation is cooperative: the runtime observes it while the
-            // call is in flight.
+            method::utilities::CANCELLED => self.cancel_request(notification.params),
             _ => self.handler.notify(&self.session, notification),
         }
     }
@@ -467,6 +580,101 @@ mod tests {
             )))
             .await;
         (dispatcher, outbound)
+    }
+
+    /// Handler whose `tools/call` never completes. Its future sets `dropped`
+    /// when it is dropped, which is how a cancelled request stops.
+    #[derive(Debug, Default)]
+    struct HangingHandler {
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    struct SetOnDrop(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for SetOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl Handler for HangingHandler {
+        fn handle<'a>(&'a self, _session: &'a Arc<Session>, request: Request) -> HandlerFuture<'a> {
+            Box::pin(async move {
+                let _guard = SetOnDrop(Arc::clone(&self.dropped));
+                std::future::pending::<()>().await;
+                Ok(Some(ServerMessage::Response(Response::success(
+                    request.id,
+                    Value::Null,
+                ))))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_request_is_dropped_and_gets_no_reply() {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let handler = HangingHandler {
+            dropped: Arc::clone(&dropped),
+        };
+        let (dispatcher, mut outbound) = Dispatcher::new(build_session(), Arc::new(handler));
+        dispatcher
+            .dispatch_payload(initialize_payload())
+            .await
+            .expect("initialize");
+        dispatcher
+            .dispatch(ClientMessage::Notification(Notification::new(
+                method::lifecycle::INITIALIZED,
+            )))
+            .await;
+        while outbound.try_recv().is_ok() {}
+
+        let call = serde_json::json!({
+            "jsonrpc": JSONRPC_VERSION,
+            "id": 7,
+            "method": method::tools::CALL,
+            "params": {"name": "slow", "arguments": {}}
+        });
+        let pending = tokio::spawn({
+            let dispatcher = Arc::clone(&dispatcher);
+            async move { dispatcher.dispatch_payload(call).await }
+        });
+        while !dispatcher.inflight_map().contains_key(&Id::Number(7)) {
+            tokio::task::yield_now().await;
+        }
+
+        dispatcher
+            .dispatch(ClientMessage::Notification(
+                Notification::new(method::utilities::CANCELLED)
+                    .with_params(serde_json::json!({"requestId": 7, "reason": "user"})),
+            ))
+            .await;
+
+        let replies = pending.await.expect("task joins").expect("dispatch");
+        assert!(
+            replies.is_empty(),
+            "a cancelled request must not be answered"
+        );
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(dispatcher.inflight_map().is_empty());
+        assert!(outbound.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_unknown_request_is_harmless() {
+        let (dispatcher, _outbound) = ready_dispatcher().await;
+        dispatcher
+            .dispatch(ClientMessage::Notification(
+                Notification::new(method::utilities::CANCELLED)
+                    .with_params(serde_json::json!({"requestId": 99})),
+            ))
+            .await;
+        let responses = dispatcher
+            .dispatch_payload(serde_json::json!({
+                "jsonrpc": JSONRPC_VERSION, "id": 2, "method": method::lifecycle::PING
+            }))
+            .await
+            .expect("dispatch");
+        assert_eq!(responses.len(), 1, "later requests are still served");
     }
 
     #[tokio::test]

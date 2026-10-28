@@ -143,12 +143,10 @@ where
             }
         };
 
-        match dispatcher.dispatch_payload(payload).await {
-            Ok(responses) => {
-                for response in responses {
-                    dispatcher.emit(response)?;
-                }
-            }
+        // Requests run on their own tasks, so this loop keeps reading while
+        // they are in flight and can receive `notifications/cancelled`.
+        match dispatcher.accept_payload(payload).await {
+            Ok(()) => {}
             Err(error) => {
                 tracing::debug!(%error, "rejecting malformed JSON-RPC payload");
                 let _ = dispatcher.emit(ServerMessage::Response(Response::from_error(
@@ -207,6 +205,10 @@ mod tests {
     }
 
     fn start(options: StdioOptions) -> Harness {
+        start_with(Arc::new(EchoHandler), options)
+    }
+
+    fn start_with(handler: Arc<dyn Handler>, options: StdioOptions) -> Harness {
         let (client_in, server_in) = tokio::io::duplex(64 * 1024);
         let (server_out, client_out) = tokio::io::duplex(64 * 1024);
         let config = SessionConfig::new(
@@ -214,14 +216,7 @@ mod tests {
             ServerCapabilities::full(),
         );
         tokio::spawn(async move {
-            let _ = serve_with_io(
-                Arc::new(EchoHandler),
-                config,
-                options,
-                server_in,
-                server_out,
-            )
-            .await;
+            let _ = serve_with_io(handler, config, options, server_in, server_out).await;
         });
         Harness {
             to_server: client_in,
@@ -289,6 +284,64 @@ mod tests {
         let response = read_message(&mut harness.from_server).await;
         assert_eq!(response["id"], 2);
         assert_eq!(response["result"]["content"][0]["text"], "pong");
+    }
+
+    /// Handler whose `tools/call` never completes on its own.
+    #[derive(Debug, Default)]
+    struct HangingCalls;
+
+    impl Handler for HangingCalls {
+        fn handle<'a>(
+            &'a self,
+            _session: &'a Arc<crate::session::Session>,
+            request: Request,
+        ) -> HandlerFuture<'a> {
+            Box::pin(async move {
+                std::future::pending::<()>().await;
+                Ok(Some(ServerMessage::Response(Response::success(
+                    request.id,
+                    Value::Null,
+                ))))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_is_read_while_a_call_is_in_flight() {
+        let mut harness = start_with(Arc::new(HangingCalls), StdioOptions::default());
+        handshake(&mut harness).await;
+
+        write_line(
+            &mut harness.to_server,
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "slow"}
+            }),
+        )
+        .await;
+        write_line(
+            &mut harness.to_server,
+            serde_json::json!({
+                "jsonrpc": "2.0", "method": "notifications/cancelled",
+                "params": {"requestId": 2, "reason": "user aborted"}
+            }),
+        )
+        .await;
+        write_line(
+            &mut harness.to_server,
+            serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "ping"}),
+        )
+        .await;
+
+        // The loop never blocked behind the hung call, and the cancelled call
+        // stays silent: the first line back is the ping's reply.
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_message(&mut harness.from_server),
+        )
+        .await
+        .expect("ping is answered while the call is in flight");
+        assert_eq!(response["id"], 3);
     }
 
     #[tokio::test]
