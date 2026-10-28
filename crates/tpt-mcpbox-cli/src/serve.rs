@@ -33,6 +33,8 @@ use tpt_mcpbox_protocol::Implementation;
 use tpt_mcpbox_protocol::model::{
     PromptsCapability, ResourcesCapability, ServerCapabilities, ToolsCapability,
 };
+use tpt_mcpbox_protocol::prompts::Prompt;
+use tpt_mcpbox_protocol::resources::Resource;
 use tpt_mcpbox_protocol::server::Handler;
 use tpt_mcpbox_protocol::session::SessionConfig;
 use tpt_mcpbox_protocol::tools::Tool;
@@ -41,7 +43,7 @@ use tpt_mcpbox_protocol::transport::stdio::{self, StdioOptions};
 use tpt_mcpbox_proxy::supervise::{Respawn, RestartPolicy, supervise};
 use tpt_mcpbox_proxy::{Client, Connection, HttpClient, PolicyGate, UpstreamOptions};
 use tpt_mcpbox_router::mcp::ToolHandler;
-use tpt_mcpbox_router::{Limiter, Limits, Metrics, Router};
+use tpt_mcpbox_router::{Exposure, Limiter, Limits, Metrics, Router};
 use tpt_mcpbox_runtime::Runtime;
 
 use crate::VERSION;
@@ -188,11 +190,16 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
             Vec::new()
         };
 
-        let visible = Visibility::new(upstream)?;
-        let tools: Vec<Tool> = listed
-            .into_iter()
-            .filter(|tool| visible.allows(&tool.name))
-            .collect();
+        let tools = visible_tools(upstream, listed)?;
+        let prompts = visible_prompts(upstream, prompts)?;
+        let resources = visible_resources(upstream, resources)?;
+        // A template can reach URIs the resource filter refuses, so templates
+        // are hidden whenever that filter is set.
+        let templates = if upstream.resources.is_empty() {
+            templates
+        } else {
+            Vec::new()
+        };
         let mut tool_names: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
         tool_names.sort();
         let gate = Arc::new(PolicyGate::new(
@@ -231,8 +238,16 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
                 "prompts": prompts.len(),
             }),
         )?;
+        let tool_exposure = Exposure {
+            rename: upstream.tools.rename.clone(),
+            describe: upstream.tools.describe.clone(),
+        };
+        let prompt_exposure = Exposure {
+            rename: upstream.prompts.rename.clone(),
+            describe: upstream.prompts.describe.clone(),
+        };
         router
-            .add_upstream(prefix, Arc::clone(&gate), tools)
+            .add_upstream_exposed(prefix, Arc::clone(&gate), tools, &tool_exposure)
             .map_err(|error| format!("upstream `{}`: {error}", upstream.name))?;
         router
             .add_upstream_resources(Arc::clone(&gate), resources)
@@ -241,7 +256,7 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
             .add_upstream_resource_templates(Arc::clone(&gate), templates)
             .map_err(|error| format!("upstream `{}`: {error}", upstream.name))?;
         router
-            .add_upstream_prompts(prefix, gate, prompts)
+            .add_upstream_prompts_exposed(prefix, gate, prompts, &prompt_exposure)
             .map_err(|error| format!("upstream `{}`: {error}", upstream.name))?;
     }
 
@@ -604,11 +619,9 @@ fn respawn(
                 .list_tools()
                 .await
                 .map_err(|error| error.to_string())?;
-            let visible = Visibility::new(&upstream)?;
-            let mut names: Vec<String> = listed
+            let mut names: Vec<String> = visible_tools(&upstream, listed)?
                 .into_iter()
                 .map(|tool| tool.name)
-                .filter(|name| visible.allows(name))
                 .collect();
             names.sort();
             if names != expected {
@@ -628,24 +641,89 @@ fn respawn(
     })
 }
 
-/// Allow and deny globs for one upstream's tools. An empty allow list means
-/// every tool, subject to the deny list.
+/// Allow and deny globs over one upstream's names. An empty allow list means
+/// every name, subject to the deny list.
 struct Visibility {
     allow: Option<GlobSet>,
     deny: Option<GlobSet>,
 }
 
 impl Visibility {
-    fn new(upstream: &UpstreamConfig) -> Result<Self, String> {
+    fn new(allow: &[String], deny: &[String], upstream: &str) -> Result<Self, String> {
         Ok(Self {
-            allow: globs(&upstream.allow, &upstream.name)?,
-            deny: globs(&upstream.deny, &upstream.name)?,
+            allow: globs(allow, upstream)?,
+            deny: globs(deny, upstream)?,
         })
     }
 
-    fn allows(&self, tool: &str) -> bool {
-        self.allow.as_ref().is_none_or(|set| set.is_match(tool))
-            && !self.deny.as_ref().is_some_and(|set| set.is_match(tool))
+    fn allows(&self, name: &str) -> bool {
+        self.allow.as_ref().is_none_or(|set| set.is_match(name))
+            && !self.deny.as_ref().is_some_and(|set| set.is_match(name))
+    }
+}
+
+/// The tools an upstream exposes after its `allow`/`deny` lists. Renames and
+/// descriptions are checked against everything the upstream lists, so a typo
+/// fails at startup instead of silently doing nothing.
+fn visible_tools(upstream: &UpstreamConfig, listed: Vec<Tool>) -> Result<Vec<Tool>, String> {
+    let names: Vec<&str> = listed.iter().map(|tool| tool.name.as_str()).collect();
+    let overrides = upstream
+        .tools
+        .rename
+        .keys()
+        .chain(upstream.tools.describe.keys());
+    check_known(&upstream.name, "tool", &names, overrides)?;
+
+    let visible = Visibility::new(&upstream.allow, &upstream.deny, &upstream.name)?;
+    Ok(listed
+        .into_iter()
+        .filter(|tool| visible.allows(&tool.name))
+        .collect())
+}
+
+/// The prompts an upstream exposes after its `prompts` filter.
+fn visible_prompts(upstream: &UpstreamConfig, listed: Vec<Prompt>) -> Result<Vec<Prompt>, String> {
+    let names: Vec<&str> = listed.iter().map(|prompt| prompt.name.as_str()).collect();
+    let overrides = upstream
+        .prompts
+        .rename
+        .keys()
+        .chain(upstream.prompts.describe.keys());
+    check_known(&upstream.name, "prompt", &names, overrides)?;
+
+    let filter = &upstream.prompts;
+    let visible = Visibility::new(&filter.allow, &filter.deny, &upstream.name)?;
+    Ok(listed
+        .into_iter()
+        .filter(|prompt| visible.allows(&prompt.name))
+        .collect())
+}
+
+/// The resources an upstream exposes after its `resources` filter, by URI.
+fn visible_resources(
+    upstream: &UpstreamConfig,
+    listed: Vec<Resource>,
+) -> Result<Vec<Resource>, String> {
+    let filter = &upstream.resources;
+    let visible = Visibility::new(&filter.allow, &filter.deny, &upstream.name)?;
+    Ok(listed
+        .into_iter()
+        .filter(|resource| visible.allows(&resource.uri))
+        .collect())
+}
+
+/// Refuses an override that names something the upstream does not list.
+fn check_known<'a>(
+    upstream: &str,
+    kind: &str,
+    listed: &[&str],
+    keys: impl Iterator<Item = &'a String>,
+) -> Result<(), String> {
+    match keys.into_iter().find(|key| !listed.contains(&key.as_str())) {
+        Some(key) => Err(format!(
+            "upstream `{upstream}`: override for {kind} `{key}`, which the upstream does not list"
+        )),
+        None => Ok(()),
     }
 }
 
@@ -840,6 +918,80 @@ mod tests {
         };
         assert!(visible.allows("search_code"));
         assert!(!visible.allows("delete_repo"));
+    }
+
+    fn upstream(extra: serde_json::Value) -> UpstreamConfig {
+        let mut value = json!({
+            "name": "kb",
+            "transport": { "stdio": { "command": "true" } },
+        });
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(value).expect("upstream config parses")
+    }
+
+    fn tool_named(name: &str) -> Tool {
+        serde_json::from_value(json!({ "name": name, "inputSchema": { "type": "object" } }))
+            .unwrap()
+    }
+
+    fn prompt_named(name: &str) -> Prompt {
+        serde_json::from_value(json!({ "name": name })).unwrap()
+    }
+
+    fn resource_at(uri: &str) -> Resource {
+        serde_json::from_value(json!({ "uri": uri, "name": uri })).unwrap()
+    }
+
+    #[test]
+    fn rename_of_an_unlisted_tool_is_refused() {
+        let config = upstream(json!({ "tools": { "rename": { "nope": "x" } } }));
+        let error = visible_tools(&config, vec![tool_named("search")]).unwrap_err();
+        assert!(error.contains("`nope`"), "{error}");
+    }
+
+    #[test]
+    fn tool_filter_applies_before_the_rename_check_and_hides_the_tool() {
+        let config = upstream(json!({
+            "deny": ["rm*"],
+            "tools": { "rename": { "rm_all": "wipe" } }
+        }));
+        // `rm_all` is listed, so the rename is accepted, but the deny hides it.
+        let visible =
+            visible_tools(&config, vec![tool_named("search"), tool_named("rm_all")]).unwrap();
+        let names: Vec<_> = visible.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["search"]);
+    }
+
+    #[test]
+    fn prompt_filter_and_override_names_are_checked() {
+        let config = upstream(json!({
+            "prompts": { "allow": ["sum*"], "describe": { "summarise": "Shorter" } }
+        }));
+        let visible = visible_prompts(
+            &config,
+            vec![prompt_named("summarise"), prompt_named("draft")],
+        )
+        .unwrap();
+        let names: Vec<_> = visible.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["summarise"]);
+
+        let typo = upstream(json!({ "prompts": { "describe": { "sumarise": "x" } } }));
+        assert!(visible_prompts(&typo, vec![prompt_named("summarise")]).is_err());
+    }
+
+    #[test]
+    fn resource_filter_is_by_uri() {
+        let config = upstream(json!({ "resources": { "deny": ["secret://*"] } }));
+        let visible = visible_resources(
+            &config,
+            vec![resource_at("file:///a.txt"), resource_at("secret://key")],
+        )
+        .unwrap();
+        let uris: Vec<_> = visible.iter().map(|r| r.uri.as_str()).collect();
+        assert_eq!(uris, ["file:///a.txt"]);
     }
 }
 

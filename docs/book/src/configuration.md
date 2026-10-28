@@ -58,6 +58,34 @@ with an optional name prefix. Names exposed by an upstream are prefixed so they
 cannot shadow a Wasm tool. A duplicate name across all sources is an error at
 startup, not a silent rename. The exact fields are in the schema.
 
+What an upstream exposes can be narrowed and reshaped. Keys always name the
+upstream's own tool, prompt or resource, and a rename or override that names
+something the upstream does not list is refused at startup.
+
+```yaml
+upstreams:
+  - name: kb
+    transport:
+      stdio: { command: kb-server }
+    prefix: kb__
+    allow: ["search*", "get_*"]    # tools: globs; empty means all
+    deny: ["get_secret"]           # tools: hidden even if allowed
+    tools:
+      rename: { search_docs: find }      # agents see kb__find
+      describe: { find: "Search the knowledge base" }
+    prompts:
+      allow: ["summar*"]
+      rename: { summarise: summary }
+    resources:
+      deny: ["secret://*"]         # by URI; also hides resource templates
+```
+
+Renames apply before the prefix. Policy rules match the upstream's own name,
+and so does the upstream, so a rename does not change what a rule must allow.
+Resource templates are hidden whenever `resources` is set, because a template
+can reach URIs the filter would refuse. Resource descriptions cannot be
+overridden.
+
 ## `server`
 
 ```yaml
