@@ -49,9 +49,13 @@ for `rm -rf /`, the hub will honour it.
   any deny wins, then any allow admits with the tightest limits, then
   `policy.default` applies.
 - Rego evaluation errors and an undefined `allow` both fail closed.
-- Policy inputs are normalised before matching: host names are lower-cased and
-  checked for Unicode look-alikes, paths are checked for traversal, and URIs are
-  normalised before comparison.
+- Policy inputs are normalised before matching, for the DSL and for Rego alike:
+  host names are lower-cased and checked for Unicode look-alikes, paths are
+  checked for traversal, and URIs are normalised before comparison. A value
+  that cannot be normalised is matched by every deny rule that names its field
+  and by no allow rule, and Rego refuses the request outright.
+- **Gap:** the hub does not yet fill in the host or path of a call, so `hosts`
+  and `paths` rules do not fire (SR-01 in [security-review.md](security-review.md)).
 
 ### 3.2 Wasm sandbox
 
@@ -67,15 +71,18 @@ Tools run as WebAssembly components under wasmtime with WASI Preview 2.
   implements. The host enforces the domain allowlist, HTTPS only, the default
   port only, and refuses userinfo tricks. Hop-by-hop headers are stripped.
 - **Limits.** Memory, table and instance counts are capped through `StoreLimits`.
-  Execution time is bounded by an epoch deadline (10 ms tick). Traps, out-of-
+  The memory cap applies to each linear memory, not the instance (SR-09).
+  Execution time is bounded by an epoch deadline (10 ms tick) while guest code
+  runs; time spent blocked in a host call is not covered yet (SR-05). Traps, out-of-
   memory, timeouts and cancellation all become structured errors, and the
   instance is discarded.
 - **Pooling.** Instances are reused until recycled (after 256 calls or on any
   fault). Guest memory can therefore persist between calls within one recycle
   window. See residual risk R3.
-- **Startup self-test.** `Runtime::self_test` loads a probe module with no grants
-  and asserts that file reads, outbound requests and environment access are
-  refused.
+- **Self-test.** `Runtime::self_test` loads a probe module with no grants and
+  asserts that file reads, outbound requests and environment access are
+  refused. The test suite runs it; the hub does not run it at startup yet
+  (SR-10).
 
 ### 3.3 Secrets
 
@@ -113,7 +120,9 @@ Tools run as WebAssembly components under wasmtime with WASI Preview 2.
 ### 3.6 Resource limits
 
 - Per-tool and per-client rate limits (token bucket) and concurrency limits
-  (semaphore). Admission is all-or-nothing, so a call is not half-admitted.
+  (semaphore). Concurrency permits are all-or-nothing; a tool's rate token is
+  not returned when the client gate refuses (SR-19). Per-client limits exist
+  in the limiter but have no configuration yet, so they are off (SR-14).
 - Upstream spawn uses a cleared environment and kill-on-drop.
 
 ## 4. Non-goals
@@ -141,14 +150,17 @@ v0.1.0.
 | R1 | Response bodies from `wasi:http` are not size-capped; the outbound future does not expose the body stream. A tool can make the host buffer an arbitrarily large response. | Open |
 | R2 | DNS rebinding and private-address (SSRF) checks are not done. An allowlisted name that resolves to a private or link-local address is not blocked. | Open |
 | R3 | Guest memory persists across calls within one recycle window. `recycle_after` is fixed at 256 and not yet configurable. | Partly mitigated |
-| R4 | A filesystem grant preopens its fixed directory. A grant of `workspace/*.md` exposes all of `workspace/` to the guest. | Accepted, documented |
+| R4 | A filesystem grant preopens its fixed directory. A grant of `workspace/*.md` exposes all of `workspace/` to the guest, and a write grant of `workspace/*.log` makes all of `workspace/` writable. | Accepted, documented |
 | R5 | Signature verification of modules (`sigstore`/`minisign`) is not implemented. SHA-256 pinning is the only integrity check, and unpinned modules load with a warning. | Open |
 | R6 | OCI pulls are refused (`ToolError::Unsupported`), so there is no supply-chain path to audit yet. | Open (feature gap) |
-| R7 | Upstream responses are not scanned for secret or PII patterns. | Open |
+| R7 | Upstream responses are scanned only against the per-upstream `scan` rules an operator writes, and prompts are not scanned. Known secret values are redacted. | Partly mitigated |
 | R8 | Client-side rate-limit state is never evicted, so memory grows with the number of distinct session ids. | Open |
-| R9 | Truncation of the newest audit entries is not detected without an external head checkpoint. | Open |
+| R9 | Truncation of the newest audit entries is not detected without an external head checkpoint. The chain hash is unkeyed, so someone who can write the file can also recompute the whole chain. | Open |
 | R10 | Only one shared bearer token exists. There is no per-client token and no rotation without restart. | Open |
-| R11 | The hub has not been fuzzed in CI yet. The JSON-RPC parser, config parser, YAML DSL and WIT boundary are the priority targets. | Open |
+| R11 | Fuzz targets cover the JSON-RPC parser, config parser and policy input, and run weekly in CI. The WIT boundary has no target yet. | Partly mitigated |
+
+The internal review in [security-review.md](security-review.md) lists further
+findings (SR-01 to SR-26) with severity and status.
 
 ## 6. How to check these claims
 

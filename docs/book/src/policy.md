@@ -78,9 +78,14 @@ allow if {
 }
 ```
 
+The module sees the same normalised host, path and URIs as the DSL, and a
+request whose host, path or URI cannot be normalised is refused before the
+module runs. A relative `policy.rego` path is resolved against the directory of
+the configuration file.
+
 A DSL deny always wins over Rego. An error in the module, or an undefined
-`allow`, counts as a refusal. Rego can therefore only make a decision stricter
-than the DSL, never looser than a DSL deny.
+`allow`, counts as a refusal. Rego is not only a filter, though: when no DSL
+rule matches, a Rego allow admits the call even with `default: deny`.
 
 ## Testing a decision
 

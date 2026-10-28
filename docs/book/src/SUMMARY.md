@@ -10,3 +10,4 @@
 - [Troubleshooting](troubleshooting.md)
 - [Architecture](architecture.md)
 - [Security model](security-model.md)
+- [Security review (internal)](security-review.md)
