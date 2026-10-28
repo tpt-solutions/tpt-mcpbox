@@ -9,7 +9,7 @@ Local-first, zero-trust MCP proxy + WebAssembly tool runtime (Rust). See [spec.t
 (`tpt-mcpbox-sdk`, `tpt-mcpbox-tool-github`, `tpt-mcpbox-tool-fs`) live outside
 the host workspace and build for `wasm32-wasip2` with `cargo-component`.
 
-**Last updated:** 2026-10-28 — agent cancellation (`notifications/cancelled`), per-request timeout (`server.request_timeout`), audit finish records for dropped calls, idle client gate sweep, argument-traversal policy tests; workspace tests and clippy pass. Earlier: 2026-10-27 — tracing/logging config, shell completions and man pages, security model and integration docs, fuzz targets and CI jobs added; workspace tests, clippy and fmt pass. Earlier: 2026-10-15 — Phase 0 complete, Phase 1 (protocol core)
+**Last updated:** 2026-10-28 — per-upstream tool/prompt/resource overrides (renames, descriptions, filters), response scan rules (redact or refuse), capability reconciliation at `initialize`, queue-and-wait for Wasm tools, limiter DoS tests, fuzz job moved to weekly; workspace tests, clippy and fmt pass. Earlier the same day: agent cancellation (`notifications/cancelled`), per-request timeout (`server.request_timeout`), audit finish records for dropped calls, idle client gate sweep, argument-traversal policy tests; workspace tests and clippy pass. Earlier: 2026-10-27 — tracing/logging config, shell completions and man pages, security model and integration docs, fuzz targets and CI jobs added; workspace tests, clippy and fmt pass. Earlier: 2026-10-15 — Phase 0 complete, Phase 1 (protocol core)
 implemented with 109 passing tests; Phase 2 (config & secrets) largely
 implemented with 73 passing config tests (open: SIGHUP, central redaction
 wiring); Phase 3 YAML DSL evaluator landed with 25 passing policy tests (Rego,
