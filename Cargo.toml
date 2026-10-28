@@ -50,6 +50,7 @@ wasmtime-wasi = "48"
 wasmtime-wasi-http = "48"
 wasmtime-wasi-io = "48"
 regorus = { version = "0.13", default-features = false, features = ["arc"] }
+regex = "1"
 serde = { version = "1", features = ["derive"] }
 schemars = { version = "1", features = ["derive"] }
 serde_norway = "0.9"

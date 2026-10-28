@@ -389,6 +389,34 @@ pub struct UpstreamConfig {
     /// the filter would refuse.
     #[serde(default, skip_serializing_if = "ResourceFilter::is_empty")]
     pub resources: ResourceFilter,
+    /// Patterns checked on this upstream's tool results and resource text.
+    /// Rules run in order; a `refuse` match fails the call.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scan: Vec<ScanRule>,
+}
+
+/// One pattern checked on upstream responses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ScanRule {
+    /// Name shown in audit records and refusals, e.g. `aws_access_key`.
+    pub name: String,
+    /// Regular expression, matched anywhere in each string.
+    pub pattern: String,
+    /// What to do with a match.
+    #[serde(default)]
+    pub action: ScanAction,
+}
+
+/// What a scan does with a match.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ScanAction {
+    /// Replace the match with `[redacted:<name>]` and pass the rest on.
+    #[default]
+    Redact,
+    /// Fail the call, so the agent receives no part of the response.
+    Refuse,
 }
 
 impl UpstreamConfig {

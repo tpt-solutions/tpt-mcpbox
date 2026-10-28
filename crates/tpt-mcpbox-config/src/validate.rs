@@ -562,6 +562,28 @@ fn validate_upstream_names(upstream: &UpstreamConfig, path: &str, report: &mut V
             }
         }
     }
+
+    let mut names = HashSet::new();
+    for rule in &upstream.scan {
+        if rule.name.trim().is_empty() {
+            report.diagnostics.push(Diagnostic::error(
+                format!("{path}.scan"),
+                "scan rules need a non-empty name",
+            ));
+        } else if !names.insert(rule.name.as_str()) {
+            report.diagnostics.push(Diagnostic::error(
+                format!("{path}.scan"),
+                format!("two scan rules are named `{}`", rule.name),
+            ));
+        }
+        if let Err(error) = regex::Regex::new(&rule.pattern) {
+            report.diagnostics.push(Diagnostic::error_with_hint(
+                format!("{path}.scan"),
+                format!("scan rule `{}`: {error}", rule.name),
+                "use a regular expression; `regex` syntax applies",
+            ));
+        }
+    }
 }
 
 fn validate_policy(config: &Config, mode: ValidationMode, report: &mut ValidationReport) {
@@ -695,6 +717,36 @@ mod tests {
     fn the_default_configuration_validates() {
         let report = validate(&Config::default(), ValidationMode::Serve);
         assert!(report.is_ok(), "{report}");
+    }
+
+    #[test]
+    fn upstream_scan_rules_are_checked() {
+        let config = parse(
+            r#"
+upstreams:
+  - name: kb
+    transport:
+      stdio:
+        command: "true"
+    scan:
+      - name: card
+        pattern: "(unclosed"
+      - name: card
+        pattern: "\\d{4}"
+        action: refuse
+"#,
+        );
+        let found = errors(&config);
+        assert!(
+            found.iter().any(|e| e.contains("scan rule `card`")),
+            "{found:?}"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|e| e.contains("two scan rules are named `card`")),
+            "{found:?}"
+        );
     }
 
     #[test]

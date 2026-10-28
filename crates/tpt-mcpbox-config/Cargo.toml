@@ -19,6 +19,7 @@ workspace = true
 # serde_norway is a maintained drop-in fork of the deprecated serde_yaml 0.9,
 # with the same API and no unmaintained `unsafe-libyaml` dependency.
 serde_norway = { workspace = true }
+regex = { workspace = true }
 schemars = { version = "1", features = ["derive"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

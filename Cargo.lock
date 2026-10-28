@@ -2484,6 +2484,7 @@ dependencies = [
 name = "tpt-mcpbox-config"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "schemars",
  "serde",
  "serde_json",
@@ -2539,6 +2540,7 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
+ "regex",
  "rustls",
  "serde",
  "serde_json",
