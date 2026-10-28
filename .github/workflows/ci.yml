@@ -4,6 +4,9 @@ on:
   push:
     branches: [master]
   pull_request:
+  schedule:
+    # Weekly, Sunday 03:00 UTC. Only the fuzz job runs on this schedule.
+    - cron: "0 3 * * 0"
   workflow_dispatch:
 
 concurrency:
@@ -17,6 +20,7 @@ env:
 jobs:
   # Fast feedback: fmt + clippy + tests on the host toolchain.
   lint:
+    if: github.event_name != 'schedule'
     name: fmt + clippy
     runs-on: ubuntu-latest
     steps:
@@ -29,6 +33,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
+    if: github.event_name != 'schedule'
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -47,6 +52,7 @@ jobs:
 
   # The MSRV must keep compiling; bumping it is a conscious decision.
   msrv:
+    if: github.event_name != 'schedule'
     name: msrv (1.95)
     runs-on: ubuntu-latest
     steps:
@@ -60,6 +66,7 @@ jobs:
   # Each target runs on its own host. C build scripts such as ring's use the
   # host cc, which only accepts the Apple flags on macOS.
   cross:
+    if: github.event_name != 'schedule'
     name: check ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -83,6 +90,7 @@ jobs:
       - run: cargo check --workspace --target ${{ matrix.target }}
 
   supply-chain:
+    if: github.event_name != 'schedule'
     name: supply chain
     runs-on: ubuntu-latest
     steps:
@@ -97,6 +105,7 @@ jobs:
 
   # Guest crates build for wasm32-wasip2 with cargo-component.
   guest:
+    if: github.event_name != 'schedule'
     name: guest crates
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -110,10 +119,12 @@ jobs:
       - run: cargo component build --release --manifest-path tools/tpt-mcpbox-tool-github/Cargo.toml
       - run: cargo component build --release --manifest-path tools/tpt-mcpbox-tool-fs/Cargo.toml
 
-  # Parser fuzzing: each target runs for a bounded time on every change. A
-  # crash fails the job and uploads the reproducer as an artifact. The sanitizer
-  # flags need nightly, so the job pins it for every step, not just the install.
+  # Parser fuzzing: each target runs for a bounded time once a week (and on
+  # manual dispatch), not on every change. A crash fails the job and uploads the
+  # reproducer as an artifact. The sanitizer flags need the Rust nightly
+  # toolchain, so the job pins it for every step, not just the install.
   fuzz:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     name: fuzz (${{ matrix.target }})
     runs-on: ubuntu-latest
     env:
@@ -141,6 +152,7 @@ jobs:
   # check uses the median of criterion's estimate, on a shared runner, so it is
   # a regression alarm rather than a precise measurement.
   bench:
+    if: github.event_name != 'schedule'
     name: benchmark (warm invocation)
     runs-on: ubuntu-latest
     steps:
@@ -169,6 +181,7 @@ jobs:
   # Software bill of materials for the host workspace, in CycloneDX. The release
   # job attaches it to the GitHub release once that workflow exists.
   sbom:
+    if: github.event_name != 'schedule'
     name: sbom (CycloneDX)
     runs-on: ubuntu-latest
     steps:
@@ -185,6 +198,7 @@ jobs:
   # The book is built on every change so that a broken include or link fails
   # the build. Publishing it is a separate decision.
   docs:
+    if: github.event_name != 'schedule'
     name: docs (mdbook)
     runs-on: ubuntu-latest
     steps:
