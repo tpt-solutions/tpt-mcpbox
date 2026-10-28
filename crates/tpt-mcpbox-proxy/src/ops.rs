@@ -12,10 +12,14 @@ use std::future::Future;
 
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
+use tpt_mcpbox_protocol::completion::{CompleteRequest, CompleteResult};
 use tpt_mcpbox_protocol::method;
 use tpt_mcpbox_protocol::model::{ClientCapabilities, InitializeParams, InitializeResult};
 use tpt_mcpbox_protocol::prompts::{GetPromptResult, ListPromptsResult, Prompt};
-use tpt_mcpbox_protocol::resources::{ListResourcesResult, ReadResourceResult, Resource};
+use tpt_mcpbox_protocol::resources::{
+    ListResourceTemplatesResult, ListResourcesResult, ReadResourceResult, Resource,
+    ResourceTemplate,
+};
 use tpt_mcpbox_protocol::tools::{CallToolResult, ListToolsResult, Tool};
 use tpt_mcpbox_protocol::{Implementation, LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS};
 
@@ -151,6 +155,22 @@ pub async fn list_resources<C: RpcChannel>(channel: &C) -> Result<Vec<Resource>,
     .await
 }
 
+/// Fetches every page of `resources/templates/list`.
+///
+/// # Errors
+///
+/// Fails on transport errors, peer errors, or a repeated cursor.
+pub async fn list_resource_templates<C: RpcChannel>(
+    channel: &C,
+) -> Result<Vec<ResourceTemplate>, UpstreamError> {
+    collect_pages(
+        channel,
+        method::resources::TEMPLATES_LIST,
+        |page: ListResourceTemplatesResult| (page.resource_templates, page.next_cursor),
+    )
+    .await
+}
+
 /// Reads one resource by URI.
 ///
 /// # Errors
@@ -199,4 +219,32 @@ pub async fn get_prompt<C: RpcChannel>(
             .call(method::prompts::GET, Value::Object(params))
             .await?,
     )
+}
+
+/// Asks the peer to complete a prompt argument or a resource template variable.
+///
+/// # Errors
+///
+/// Fails on transport errors, peer errors, or a malformed result.
+pub async fn complete<C: RpcChannel>(
+    channel: &C,
+    request: &CompleteRequest,
+) -> Result<CompleteResult, UpstreamError> {
+    from_value(
+        channel
+            .call(method::completion::COMPLETE, to_value(request)?)
+            .await?,
+    )
+}
+
+/// Sends `ping` and waits for the peer's reply. The reply carries nothing.
+///
+/// # Errors
+///
+/// Fails on transport errors, peer errors, or no reply within the request timeout.
+pub async fn ping<C: RpcChannel>(channel: &C) -> Result<(), UpstreamError> {
+    channel
+        .call(method::lifecycle::PING, json!({}))
+        .await
+        .map(|_| ())
 }

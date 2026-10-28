@@ -8,6 +8,7 @@
 //! forwards the MCP operations to the right client.
 
 use serde_json::{Map, Value};
+use tpt_mcpbox_protocol::completion::{CompleteRequest, CompleteResult};
 use tpt_mcpbox_protocol::model::InitializeResult;
 use tpt_mcpbox_protocol::prompts::{GetPromptResult, Prompt};
 use tpt_mcpbox_protocol::resources::{ReadResourceResult, Resource};
@@ -89,6 +90,67 @@ impl Connection {
         match self {
             Self::Stdio(client) => ops::list_resources(client).await,
             Self::Http(client) => ops::list_resources(client).await,
+        }
+    }
+
+    /// Requests sent and not yet answered. HTTP has no shared pending table, so
+    /// it reports zero; health checks only apply to stdio upstreams.
+    #[must_use]
+    pub fn in_flight(&self) -> usize {
+        match self {
+            Self::Stdio(client) => client.in_flight(),
+            Self::Http(_) => 0,
+        }
+    }
+
+    /// Sends `ping` and waits for the reply. See [`crate::ops::ping`].
+    ///
+    /// # Errors
+    ///
+    /// See [`crate::ops::ping`].
+    pub async fn ping(&self) -> Result<(), UpstreamError> {
+        match self {
+            Self::Stdio(client) => ops::ping(client).await,
+            Self::Http(client) => ops::ping(client).await,
+        }
+    }
+
+    /// `true` when a stdio peer has exited, so it must be replaced. HTTP
+    /// endpoints have no connection to lose, so they never report closed.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        match self {
+            Self::Stdio(client) => client.is_closed(),
+            Self::Http(_) => false,
+        }
+    }
+
+    /// Lists every resource template, across all pages.
+    ///
+    /// # Errors
+    ///
+    /// See [`crate::ops::list_resource_templates`].
+    pub async fn list_resource_templates(
+        &self,
+    ) -> Result<Vec<tpt_mcpbox_protocol::resources::ResourceTemplate>, UpstreamError> {
+        match self {
+            Self::Stdio(client) => ops::list_resource_templates(client).await,
+            Self::Http(client) => ops::list_resource_templates(client).await,
+        }
+    }
+
+    /// Asks for completions. Policy is not checked here; see [`crate::PolicyGate`].
+    ///
+    /// # Errors
+    ///
+    /// See [`crate::ops::complete`].
+    pub async fn complete(
+        &self,
+        request: &CompleteRequest,
+    ) -> Result<CompleteResult, UpstreamError> {
+        match self {
+            Self::Stdio(client) => ops::complete(client, request).await,
+            Self::Http(client) => ops::complete(client, request).await,
         }
     }
 

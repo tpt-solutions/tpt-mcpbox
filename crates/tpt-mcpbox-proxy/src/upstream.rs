@@ -32,6 +32,7 @@ use tpt_mcpbox_protocol::jsonrpc::{Error as RpcError, Id, Notification, Request,
 
 use tpt_mcpbox_protocol::model::InitializeResult;
 use tpt_mcpbox_protocol::tools::{CallToolResult, Tool};
+use tpt_mcpbox_protocol::utilities::cancelled_notification;
 
 /// Default cap on a single line received from an upstream.
 pub const DEFAULT_MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
@@ -205,6 +206,19 @@ impl Client {
         ops::call_tool(self, name, arguments).await
     }
 
+    /// `true` once the reader has seen the peer go away (end of stream or a
+    /// read error). Calls on a closed client fail at once.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.shared.closed.load(Ordering::Acquire)
+    }
+
+    /// Requests sent and not yet answered.
+    #[must_use]
+    pub fn in_flight(&self) -> usize {
+        lock(&self.shared.pending).len()
+    }
+
     /// Sends a request and waits for its response.
     async fn call(&self, method: &str, params: Value) -> Result<Value, UpstreamError> {
         let id = Id::Number(self.next_id.fetch_add(1, Ordering::Relaxed));
@@ -227,9 +241,14 @@ impl Client {
             return Err(err);
         }
 
+        // Armed from here: if this call is dropped or times out before the
+        // reply arrives, the upstream is told to stop the request.
+        let mut abandon = Abandon {
+            client: self,
+            id: Some(id),
+        };
         let response = match tokio::time::timeout(self.options.request_timeout, response).await {
             Err(_) => {
-                lock(&self.shared.pending).remove(&id);
                 return Err(UpstreamError::Timeout {
                     method: method.to_owned(),
                 });
@@ -237,6 +256,7 @@ impl Client {
             Ok(Err(_)) => return Err(UpstreamError::Closed),
             Ok(Ok(response)) => response,
         };
+        abandon.disarm();
 
         if let Some(error) = response.error {
             return Err(UpstreamError::Rpc {
@@ -264,6 +284,41 @@ impl Client {
             .send(line)
             .await
             .map_err(|_| UpstreamError::Closed)
+    }
+}
+
+/// Stops waiting for one upstream request. Dropping it removes the pending
+/// entry and, unless [`Abandon::disarm`] was called first, sends
+/// `notifications/cancelled` so the upstream can stop the work.
+struct Abandon<'a> {
+    client: &'a Client,
+    id: Option<Id>,
+}
+
+impl Abandon<'_> {
+    /// The reply arrived, so there is nothing to abandon.
+    fn disarm(&mut self) {
+        self.id = None;
+    }
+}
+
+impl Drop for Abandon<'_> {
+    fn drop(&mut self) {
+        let Some(id) = self.id.take() else {
+            return;
+        };
+        lock(&self.client.shared.pending).remove(&id);
+        let notice = cancelled_notification(id, "caller stopped waiting");
+        match serde_json::to_string(&notice) {
+            // `try_send`, because drop cannot wait. If the queue is full the
+            // upstream is not keeping up, and the request timeout still bounds it.
+            Ok(line) => {
+                if self.client.outbound.try_send(line).is_err() {
+                    tracing::debug!("upstream queue full; cancellation not sent");
+                }
+            }
+            Err(error) => tracing::debug!(%error, "cannot encode cancellation"),
+        }
     }
 }
 
@@ -541,6 +596,67 @@ mod tests {
         args.insert("text".to_owned(), json!("hi"));
         let result = client.call_tool("echo", Some(args)).await.unwrap();
         assert_eq!(result.content.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn abandoned_call_sends_cancellation_upstream() {
+        let (client, server) = client_pair(UpstreamOptions::default());
+        let (seen_tx, mut seen_rx) = mpsc::channel::<Value>(8);
+        let (read, _write) = tokio::io::split(server);
+        // Records every message and never answers, so the call stalls.
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let message: Value = serde_json::from_str(&line).unwrap();
+                let _ = seen_tx.send(message).await;
+            }
+        });
+
+        let stalled =
+            tokio::time::timeout(Duration::from_millis(50), client.call_tool("hang", None)).await;
+        assert!(stalled.is_err(), "the call should still be waiting");
+
+        let request = seen_rx.recv().await.unwrap();
+        assert_eq!(request["method"], "tools/call");
+        let cancel = seen_rx.recv().await.unwrap();
+        assert_eq!(cancel["method"], "notifications/cancelled");
+        assert_eq!(cancel["params"]["requestId"], request["id"]);
+        assert!(cancel.get("id").is_none(), "cancellation is a notification");
+    }
+
+    #[tokio::test]
+    async fn completed_call_sends_no_cancellation() {
+        let (client, server) = client_pair(UpstreamOptions::default());
+        let (seen_tx, mut seen_rx) = mpsc::channel::<String>(8);
+        let (read, mut write) = tokio::io::split(server);
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let message: Value = serde_json::from_str(&line).unwrap();
+                let _ = seen_tx
+                    .send(message["method"].as_str().unwrap().to_owned())
+                    .await;
+                if let Some(id) = message.get("id") {
+                    let reply = json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": { "content": [{ "type": "text", "text": "ok" }] }
+                    });
+                    write
+                        .write_all(format!("{reply}\n").as_bytes())
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+
+        client.call_tool("echo", None).await.unwrap();
+        assert_eq!(seen_rx.recv().await.unwrap(), "tools/call");
+        // Nothing follows a completed call.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), seen_rx.recv())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

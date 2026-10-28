@@ -14,6 +14,7 @@ pub mod connection;
 pub mod gate;
 pub mod http;
 pub mod ops;
+pub mod supervise;
 pub mod upstream;
 
 pub use connection::Connection;

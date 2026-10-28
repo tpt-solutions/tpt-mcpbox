@@ -29,6 +29,7 @@ use hyper_util::rt::TokioExecutor;
 use serde_json::Value;
 use tpt_mcpbox_protocol::LATEST_PROTOCOL_VERSION;
 use tpt_mcpbox_protocol::jsonrpc::{Id, Notification, Request, Response};
+use tpt_mcpbox_protocol::utilities::cancelled_notification;
 
 use crate::ops::RpcChannel;
 use crate::upstream::{UpstreamError, UpstreamOptions};
@@ -136,22 +137,8 @@ impl HttpClient {
     }
 
     async fn post(&self, body: String) -> Result<hyper::Response<Incoming>, UpstreamError> {
-        let mut builder = hyper::Request::builder()
-            .method(Method::POST)
-            .uri(self.endpoint.clone())
-            .header(CONTENT_TYPE, "application/json")
-            .header(ACCEPT, "application/json, text/event-stream")
-            .header(PROTOCOL_HEADER, LATEST_PROTOCOL_VERSION);
-        for (name, value) in &self.headers {
-            builder = builder.header(name, value);
-        }
-        if let Some(session) = lock(&self.session).clone() {
-            builder = builder.header(SESSION_HEADER, session);
-        }
-        let request = builder
-            .body(Full::new(Bytes::from(body)))
-            .map_err(|e| UpstreamError::Transport(e.to_string()))?;
-
+        let session = lock(&self.session).clone();
+        let request = build_post(&self.endpoint, &self.headers, session, body)?;
         let response = self
             .http
             .request(request)
@@ -193,12 +180,98 @@ impl HttpClient {
     }
 }
 
+/// Builds one `POST` to the endpoint with the configured headers and, when
+/// there is one, the session id.
+fn build_post(
+    endpoint: &Uri,
+    headers: &[(HeaderName, HeaderValue)],
+    session: Option<HeaderValue>,
+    body: String,
+) -> Result<hyper::Request<Full<Bytes>>, UpstreamError> {
+    let mut builder = hyper::Request::builder()
+        .method(Method::POST)
+        .uri(endpoint.clone())
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "application/json, text/event-stream")
+        .header(PROTOCOL_HEADER, LATEST_PROTOCOL_VERSION);
+    for (name, value) in headers {
+        builder = builder.header(name, value);
+    }
+    if let Some(session) = session {
+        builder = builder.header(SESSION_HEADER, session);
+    }
+    builder
+        .body(Full::new(Bytes::from(body)))
+        .map_err(|e| UpstreamError::Transport(e.to_string()))
+}
+
+/// Tells the server to stop a request this side no longer waits for. Armed
+/// until the exchange finishes. Dropping it sends `notifications/cancelled` as
+/// a detached `POST`, because drop cannot await. The guard owns clones of what
+/// the `POST` needs, so it does not borrow the client.
+struct Abandon {
+    endpoint: Uri,
+    headers: Vec<(HeaderName, HeaderValue)>,
+    session: Option<HeaderValue>,
+    http: Http,
+    id: Option<Id>,
+}
+
+impl Abandon {
+    fn new(client: &HttpClient, id: Id) -> Self {
+        Self {
+            endpoint: client.endpoint.clone(),
+            headers: client.headers.clone(),
+            session: lock(&client.session).clone(),
+            http: client.http.clone(),
+            id: Some(id),
+        }
+    }
+
+    /// The exchange finished, so there is nothing to abandon.
+    fn disarm(&mut self) {
+        self.id = None;
+    }
+}
+
+impl Drop for Abandon {
+    fn drop(&mut self) {
+        let Some(id) = self.id.take() else {
+            return;
+        };
+        // Nothing to spawn onto outside a runtime, and a client that is not
+        // running on one has no request in flight to cancel.
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let notice = cancelled_notification(id, "caller stopped waiting");
+        let Ok(body) = serde_json::to_string(&notice) else {
+            return;
+        };
+        let Ok(request) = build_post(&self.endpoint, &self.headers, self.session.clone(), body)
+        else {
+            return;
+        };
+        let http = self.http.clone();
+        runtime.spawn(async move {
+            match http.request(request).await {
+                Ok(response) if response.status().is_success() => {}
+                Ok(response) => {
+                    tracing::debug!(status = %response.status(), "cancellation refused by upstream");
+                }
+                Err(error) => tracing::debug!(%error, "cancellation not delivered"),
+            }
+        });
+    }
+}
+
 impl RpcChannel for HttpClient {
     async fn call(&self, method: &str, params: Value) -> Result<Value, UpstreamError> {
         let id = Id::Number(self.next_id.fetch_add(1, Ordering::Relaxed));
         let body = serde_json::to_string(&Request::new(id.clone(), method).with_params(params))
             .map_err(|e| UpstreamError::Malformed(e.to_string()))?;
 
+        let mut abandon = Abandon::new(self, id.clone());
         let response = match tokio::time::timeout(
             self.options.request_timeout,
             self.exchange(&id, body),
@@ -210,7 +283,10 @@ impl RpcChannel for HttpClient {
                     method: method.to_owned(),
                 });
             }
-            Ok(result) => result?,
+            Ok(result) => {
+                abandon.disarm();
+                result?
+            }
         };
 
         if let Some(error) = response.error {
@@ -402,6 +478,60 @@ mod tests {
 
     fn client(url: &str, options: UpstreamOptions) -> HttpClient {
         HttpClient::new(url, &BTreeMap::new(), options).unwrap()
+    }
+
+    #[tokio::test]
+    async fn abandoned_call_posts_cancellation() {
+        async fn handler(
+            axum::extract::State(seen): axum::extract::State<
+                tokio::sync::mpsc::UnboundedSender<Value>,
+            >,
+            body: String,
+        ) -> AxumResponse {
+            let msg: Value = serde_json::from_str(&body).unwrap();
+            let _ = seen.send(msg.clone());
+            if msg.get("id").is_none() {
+                return AxumResponse::builder()
+                    .status(StatusCode::ACCEPTED)
+                    .body(Body::empty())
+                    .unwrap();
+            }
+            // The call is never answered in time; the caller gives up first.
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            AxumResponse::builder()
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "jsonrpc": "2.0", "id": msg["id"], "result": {} }).to_string(),
+                ))
+                .unwrap()
+        }
+
+        let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel();
+        let app = Router::new()
+            .route("/mcp", post(handler))
+            .with_state(seen_tx);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let options = UpstreamOptions {
+            request_timeout: Duration::from_millis(100),
+            ..UpstreamOptions::default()
+        };
+        let client = client(&format!("http://{addr}/mcp"), options);
+        let outcome = client.call_tool("hang", None).await;
+        assert!(matches!(outcome, Err(UpstreamError::Timeout { .. })));
+
+        let call = seen.recv().await.unwrap();
+        assert_eq!(call["method"], "tools/call");
+        let cancel = tokio::time::timeout(Duration::from_secs(2), seen.recv())
+            .await
+            .expect("cancellation arrives")
+            .unwrap();
+        assert_eq!(cancel["method"], "notifications/cancelled");
+        assert_eq!(cancel["params"]["requestId"], call["id"]);
     }
 
     #[tokio::test]

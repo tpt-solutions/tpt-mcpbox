@@ -9,10 +9,11 @@
 //! so the gate follows the same rule as the engine: the call proceeds only when
 //! the decision is `allow`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde_json::{Map, Value};
 use tpt_mcpbox_policy::{Decision, Policy, PolicyInput};
+use tpt_mcpbox_protocol::completion::{CompleteRequest, CompleteResult, Reference};
 use tpt_mcpbox_protocol::prompts::GetPromptResult;
 use tpt_mcpbox_protocol::resources::ReadResourceResult;
 use tpt_mcpbox_protocol::tools::CallToolResult;
@@ -42,11 +43,19 @@ fn rule_suffix(rule_id: &Option<String>) -> String {
         .map_or_else(String::new, |id| format!(" (rule `{id}`)"))
 }
 
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    // The slot only ever holds a finished `Arc`, so a poisoned lock is still
+    // safe to read.
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// An upstream client that consults the policy before every call.
 #[derive(Debug)]
 pub struct PolicyGate {
     upstream: String,
-    client: Connection,
+    client: Mutex<Arc<Connection>>,
     policy: Arc<Policy>,
 }
 
@@ -61,16 +70,46 @@ impl PolicyGate {
     ) -> Self {
         Self {
             upstream: upstream.into(),
-            client: client.into(),
+            client: Mutex::new(Arc::new(client.into())),
             policy,
         }
     }
 
-    /// The transport this gate forwards to. Used to run the handshake and
-    /// tool listing before the gate starts serving calls.
+    /// The connection calls are forwarded on right now. Calls already in
+    /// flight keep the connection they started on, even after [`replace`].
+    ///
+    /// [`replace`]: PolicyGate::replace
     #[must_use]
-    pub fn connection(&self) -> &Connection {
-        &self.client
+    pub fn connection(&self) -> Arc<Connection> {
+        Arc::clone(&lock(&self.client))
+    }
+
+    /// Swaps in a new connection, for example after the upstream process was
+    /// restarted. The old one is dropped once its last in-flight call ends.
+    pub fn replace(&self, client: impl Into<Connection>) {
+        *lock(&self.client) = Arc::new(client.into());
+    }
+
+    /// Requests the current connection is waiting on.
+    #[must_use]
+    pub fn in_flight(&self) -> usize {
+        self.connection().in_flight()
+    }
+
+    /// Pings the current connection. Not policy-checked: it is a liveness probe
+    /// the supervisor sends, not an agent call.
+    ///
+    /// # Errors
+    ///
+    /// See [`crate::ops::ping`].
+    pub async fn ping(&self) -> Result<(), UpstreamError> {
+        self.connection().ping().await
+    }
+
+    /// `true` when the current connection has lost its peer and needs replacing.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.connection().is_closed()
     }
 
     /// Name of the upstream this gate fronts.
@@ -120,7 +159,7 @@ impl PolicyGate {
                 reason: decision.reason,
             });
         }
-        Ok(self.client.call_tool(tool, arguments).await?)
+        Ok(self.connection().call_tool(tool, arguments).await?)
     }
 
     /// Checks the policy for a `resources/read` and, if it allows it, reads the
@@ -137,7 +176,7 @@ impl PolicyGate {
             ..PolicyInput::default()
         };
         self.authorize(&input, "resource read", uri)?;
-        Ok(self.client.read_resource(uri).await?)
+        Ok(self.connection().read_resource(uri).await?)
     }
 
     /// Checks the policy for a `prompts/get` and, if it allows it, renders the
@@ -157,7 +196,29 @@ impl PolicyGate {
             ..PolicyInput::default()
         };
         self.authorize(&input, "prompt", name)?;
-        Ok(self.client.get_prompt(name, arguments).await?)
+        Ok(self.connection().get_prompt(name, arguments).await?)
+    }
+
+    /// Checks the policy for a `completion/complete` and, if it allows it, asks
+    /// upstream. The reference must already name the upstream's own prompt, as
+    /// the router rewrites it. A resource reference is a URI, so URI rules apply.
+    pub async fn complete(
+        &self,
+        caller: &str,
+        request: &CompleteRequest,
+    ) -> Result<CompleteResult, ProxyError> {
+        let (kind, subject, uris) = match &request.r#ref {
+            Reference::Prompt { name, .. } => ("prompt", name.clone(), Vec::new()),
+            Reference::Resource { uri } => ("resource", uri.clone(), vec![uri.clone()]),
+        };
+        let input = PolicyInput {
+            method: "completion/complete".to_owned(),
+            caller: Some(caller.to_owned()),
+            uris,
+            ..PolicyInput::default()
+        };
+        self.authorize(&input, kind, &subject)?;
+        Ok(self.connection().complete(request).await?)
     }
 
     fn authorize(&self, input: &PolicyInput, kind: &str, subject: &str) -> Result<(), ProxyError> {
