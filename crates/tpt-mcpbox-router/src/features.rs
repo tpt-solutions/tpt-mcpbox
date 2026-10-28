@@ -22,7 +22,7 @@ use tpt_mcpbox_protocol::prompts::{GetPromptResult, Prompt};
 use tpt_mcpbox_protocol::resources::{ReadResourceResult, Resource, ResourceTemplate};
 use tpt_mcpbox_proxy::PolicyGate;
 
-use crate::dispatch::{PromptRoute, Router, RouterError};
+use crate::dispatch::{Exposure, PromptRoute, Router, RouterError};
 use crate::templates::{Pattern, TemplateRoute};
 
 /// Client-limit key for resource reads. No per-tool limits are keyed on it.
@@ -118,10 +118,26 @@ impl Router {
         gate: Arc<PolicyGate>,
         prompts: Vec<Prompt>,
     ) -> Result<(), RouterError> {
+        self.add_upstream_prompts_exposed(prefix, gate, prompts, &Exposure::default())
+    }
+
+    /// Like [`Router::add_upstream_prompts`], with the upstream's renames and
+    /// description overrides applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RouterError::Conflict`] on a name collision, after renames.
+    pub fn add_upstream_prompts_exposed(
+        &mut self,
+        prefix: Option<&str>,
+        gate: Arc<PolicyGate>,
+        prompts: Vec<Prompt>,
+        exposure: &Exposure,
+    ) -> Result<(), RouterError> {
         let prefix = prefix.unwrap_or("");
         let exposed: Vec<String> = prompts
             .iter()
-            .map(|prompt| format!("{prefix}{}", prompt.name))
+            .map(|prompt| format!("{prefix}{}", exposure.rename_of(&prompt.name)))
             .collect();
 
         if let Some(clash) = exposed.iter().find(|name| self.prompts.contains_key(*name)) {
@@ -134,6 +150,11 @@ impl Router {
 
         for (name, prompt) in exposed.into_iter().zip(prompts) {
             let upstream_name = prompt.name.clone();
+            let description = exposure
+                .describe
+                .get(&upstream_name)
+                .cloned()
+                .or(prompt.description.clone());
             self.prompts.insert(
                 name.clone(),
                 PromptRoute {
@@ -141,8 +162,14 @@ impl Router {
                     upstream_name,
                 },
             );
-            self.prompt_list
-                .insert(name.clone(), Prompt { name, ..prompt });
+            self.prompt_list.insert(
+                name.clone(),
+                Prompt {
+                    name,
+                    description,
+                    ..prompt
+                },
+            );
         }
         Ok(())
     }

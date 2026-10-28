@@ -19,7 +19,7 @@ pub mod mcp;
 pub mod metrics;
 mod templates;
 
-pub use dispatch::{Router, RouterError, ToolOutput};
+pub use dispatch::{Exposure, Router, RouterError, ToolOutput};
 pub use lifecycle::{Drain, InFlight, Lifecycle, ShuttingDown};
 pub use limiter::{Limiter, Limits, Permit, Rejection};
 pub use metrics::Metrics;

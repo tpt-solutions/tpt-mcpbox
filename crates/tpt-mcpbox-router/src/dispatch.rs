@@ -175,6 +175,26 @@ pub(crate) enum Backend {
     },
 }
 
+/// How an upstream's names and descriptions are shown to agents. Keys are the
+/// upstream's own names. A rename applies before the upstream's prefix.
+#[derive(Debug, Clone, Default)]
+pub struct Exposure {
+    /// Upstream name to the name the agent sees.
+    pub rename: BTreeMap<String, String>,
+    /// Upstream name to replacement description.
+    pub describe: BTreeMap<String, String>,
+}
+
+impl Exposure {
+    pub(crate) fn rename_of<'a>(&'a self, upstream: &'a str) -> &'a str {
+        self.rename.get(upstream).map_or(upstream, String::as_str)
+    }
+
+    pub(crate) fn description_of(&self, upstream: &str) -> Option<&str> {
+        self.describe.get(upstream).map(String::as_str)
+    }
+}
+
 pub(crate) struct Route {
     backend: Backend,
     descriptor: Tool,
@@ -292,11 +312,28 @@ impl Router {
         gate: impl Into<Arc<PolicyGate>>,
         tools: Vec<Tool>,
     ) -> Result<(), RouterError> {
+        self.add_upstream_exposed(prefix, gate, tools, &Exposure::default())
+    }
+
+    /// Like [`Router::add_upstream`], with the upstream's renames and
+    /// description overrides applied. A rename changes the name before the
+    /// prefix is added; the call still goes to the upstream's own name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RouterError::Conflict`] on a name collision, after renames.
+    pub fn add_upstream_exposed(
+        &mut self,
+        prefix: Option<&str>,
+        gate: impl Into<Arc<PolicyGate>>,
+        tools: Vec<Tool>,
+        exposure: &Exposure,
+    ) -> Result<(), RouterError> {
         let gate: Arc<PolicyGate> = gate.into();
         let prefix = prefix.unwrap_or("");
         let names: Vec<String> = tools
             .iter()
-            .map(|tool| format!("{prefix}{}", tool.name))
+            .map(|tool| format!("{prefix}{}", exposure.rename_of(&tool.name)))
             .collect();
 
         if let Some(clash) = names.iter().find(|name| self.routes.contains_key(*name)) {
@@ -308,14 +345,18 @@ impl Router {
         }
 
         for (exposed, tool) in names.into_iter().zip(tools) {
+            let upstream_name = tool.name.clone();
             let backend = Backend::Upstream {
                 gate: Arc::clone(&gate),
-                tool_name: tool.name.clone(),
+                tool_name: upstream_name.clone(),
             };
-            let descriptor = Tool {
+            let mut descriptor = Tool {
                 name: exposed.clone(),
                 ..tool
             };
+            if let Some(text) = exposure.description_of(&upstream_name) {
+                descriptor.description = Some(text.to_owned());
+            }
             self.routes.insert(
                 exposed,
                 Route {
@@ -627,6 +668,47 @@ mod tests {
         match out {
             ToolOutput::Upstream(result) => {
                 assert_eq!(result.content.len(), 1);
+            }
+            other => panic!("expected upstream output, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn renamed_tool_is_exposed_under_its_new_name_and_called_upstream_by_its_own() {
+        let policy = policy(vec![allow("search")]);
+        let mut router = Router::new(Limiter::new([], Limits::default()), Arc::clone(&policy));
+        let exposure = Exposure {
+            rename: BTreeMap::from([("search".to_owned(), "find".to_owned())]),
+            describe: BTreeMap::from([("search".to_owned(), "Find things".to_owned())]),
+        };
+        router
+            .add_upstream_exposed(
+                Some("kb__"),
+                gate(Arc::clone(&policy)),
+                vec![tool("search")],
+                &exposure,
+            )
+            .unwrap();
+
+        let listed = router.list();
+        assert_eq!(listed[0].name, "kb__find");
+        assert_eq!(listed[0].description.as_deref(), Some("Find things"));
+        assert!(
+            router
+                .call("agent", "kb__search", None, CancelToken::new())
+                .await
+                .is_err()
+        );
+
+        // The mock upstream echoes the name it was called by, which must be its own.
+        let out = router
+            .call("agent", "kb__find", None, CancelToken::new())
+            .await
+            .unwrap();
+        match out {
+            ToolOutput::Upstream(result) => {
+                let value = serde_json::to_value(&result).unwrap();
+                assert_eq!(value["content"][0]["text"], "search");
             }
             other => panic!("expected upstream output, got {other:?}"),
         }
