@@ -116,6 +116,32 @@ fn method_and_argument_constraints_must_all_hold() {
 }
 
 #[test]
+fn traversal_spellings_never_satisfy_an_exact_argument_rule() {
+    // Argument predicates are exact JSON equality, not globs, so no spelling of
+    // a traversal can stand in for the allowed path.
+    let mut rule = rule("exact-path", Effect::Allow);
+    rule.method = Some("tools/call".to_owned());
+    rule.args
+        .insert("path".to_owned(), json!("./workspace/notes.txt"));
+    let engine = engine(vec![rule]);
+
+    let mut input = call("fs_read");
+    for spelling in [
+        "./workspace/../etc/passwd",
+        "./workspace/./../secret",
+        "./workspace//notes.txt/../../x",
+        "/abs/workspace/notes.txt",
+        "./workspace/notes.txt ",
+    ] {
+        input.arguments = json!({ "path": spelling });
+        assert!(
+            !engine.evaluate(&input).is_allowed(),
+            "{spelling:?} must not match"
+        );
+    }
+}
+
+#[test]
 fn host_allowlist_matches_case_insensitively_and_strips_root_dot() {
     let mut rule = rule("github", Effect::Allow);
     rule.hosts = vec!["api.github.com".to_owned()];
