@@ -95,6 +95,15 @@ pub struct ServerConfig {
     /// HTTP listener; required when `http` is enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http: Option<HttpServerConfig>,
+    /// Longest a `tools/call` may run end to end, e.g. `"30s"`. Unset means
+    /// only each tool's own `time_limit` applies.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "duration_option"
+    )]
+    #[schemars(with = "String")]
+    pub request_timeout: Option<Duration>,
 }
 
 impl ServerConfig {
