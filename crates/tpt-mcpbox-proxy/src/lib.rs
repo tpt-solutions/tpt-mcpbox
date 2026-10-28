@@ -14,12 +14,14 @@ pub mod connection;
 pub mod gate;
 pub mod http;
 pub mod ops;
+pub mod scan;
 pub mod supervise;
 pub mod upstream;
 
 pub use connection::Connection;
 pub use gate::{PolicyGate, ProxyError};
 pub use http::HttpClient;
+pub use scan::{Refused, ResponseScanner};
 pub use upstream::{Client, UpstreamError, UpstreamOptions};
 
 /// Crate version, surfaced by `mcpbox --version`.

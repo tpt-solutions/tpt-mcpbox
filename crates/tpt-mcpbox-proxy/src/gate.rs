@@ -19,6 +19,7 @@ use tpt_mcpbox_protocol::resources::ReadResourceResult;
 use tpt_mcpbox_protocol::tools::CallToolResult;
 
 use crate::connection::Connection;
+use crate::scan::ResponseScanner;
 use crate::upstream::UpstreamError;
 
 /// Why a proxied call did not complete.
@@ -31,6 +32,13 @@ pub enum ProxyError {
         rule_id: Option<String>,
         /// Human-readable reason, safe to show to the agent.
         reason: String,
+    },
+    /// The call was allowed and the upstream answered, but a `refuse` scan rule
+    /// matched the answer, so the agent gets none of it.
+    #[error("upstream response refused by scan rule `{rule}`")]
+    Refused {
+        /// Name of the scan rule that matched.
+        rule: String,
     },
     /// The call was allowed but the upstream failed.
     #[error(transparent)]
@@ -57,6 +65,7 @@ pub struct PolicyGate {
     upstream: String,
     client: Mutex<Arc<Connection>>,
     policy: Arc<Policy>,
+    scanner: ResponseScanner,
 }
 
 impl PolicyGate {
@@ -72,7 +81,16 @@ impl PolicyGate {
             upstream: upstream.into(),
             client: Mutex::new(Arc::new(client.into())),
             policy,
+            scanner: ResponseScanner::default(),
         }
+    }
+
+    /// Scans every tool and resource response with `scanner` before it leaves
+    /// the gate. A replacement connection keeps the same scanner.
+    #[must_use]
+    pub fn with_scanner(mut self, scanner: ResponseScanner) -> Self {
+        self.scanner = scanner;
+        self
     }
 
     /// The connection calls are forwarded on right now. Calls already in
@@ -159,7 +177,11 @@ impl PolicyGate {
                 reason: decision.reason,
             });
         }
-        Ok(self.connection().call_tool(tool, arguments).await?)
+        let mut result = self.connection().call_tool(tool, arguments).await?;
+        self.scanner
+            .scan_tool_result(&mut result)
+            .map_err(|refused| ProxyError::Refused { rule: refused.rule })?;
+        Ok(result)
     }
 
     /// Checks the policy for a `resources/read` and, if it allows it, reads the
@@ -176,7 +198,11 @@ impl PolicyGate {
             ..PolicyInput::default()
         };
         self.authorize(&input, "resource read", uri)?;
-        Ok(self.connection().read_resource(uri).await?)
+        let mut result = self.connection().read_resource(uri).await?;
+        self.scanner
+            .scan_read_result(&mut result)
+            .map_err(|refused| ProxyError::Refused { rule: refused.rule })?;
+        Ok(result)
     }
 
     /// Checks the policy for a `prompts/get` and, if it allows it, renders the
@@ -352,6 +378,46 @@ mod gate_tests {
         let result = gate.call_tool("agent", "echo", None).await.unwrap();
         assert_eq!(result.content.len(), 1);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn refused_response_is_withheld_from_the_caller() {
+        let (client, _calls) = upstream();
+        let scan = vec![tpt_mcpbox_config::ScanRule {
+            name: "bad".to_owned(),
+            pattern: "ok".to_owned(),
+            action: tpt_mcpbox_config::ScanAction::Refuse,
+        }];
+        let gate = PolicyGate::new(
+            "fake",
+            client,
+            policy(vec![rule("allow-echo", Effect::Allow, "echo")]),
+        )
+        .with_scanner(ResponseScanner::new(&scan).unwrap());
+        let err = gate.call_tool("agent", "echo", None).await.unwrap_err();
+        assert!(
+            matches!(err, ProxyError::Refused { ref rule } if rule == "bad"),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn redacted_response_reaches_the_caller_rewritten() {
+        let (client, _calls) = upstream();
+        let scan = vec![tpt_mcpbox_config::ScanRule {
+            name: "o".to_owned(),
+            pattern: "o".to_owned(),
+            action: tpt_mcpbox_config::ScanAction::Redact,
+        }];
+        let gate = PolicyGate::new(
+            "fake",
+            client,
+            policy(vec![rule("allow-echo", Effect::Allow, "echo")]),
+        )
+        .with_scanner(ResponseScanner::new(&scan).unwrap());
+        let result = gate.call_tool("agent", "echo", None).await.unwrap();
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(value["content"][0]["text"], "[redacted:o]k");
     }
 
     #[tokio::test]
