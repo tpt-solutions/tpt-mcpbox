@@ -38,6 +38,7 @@ use tpt_mcpbox_protocol::session::SessionConfig;
 use tpt_mcpbox_protocol::tools::Tool;
 use tpt_mcpbox_protocol::transport::http::{HttpOptions, OriginPolicy, StreamableHttpServer};
 use tpt_mcpbox_protocol::transport::stdio::{self, StdioOptions};
+use tpt_mcpbox_proxy::supervise::{Respawn, RestartPolicy, supervise};
 use tpt_mcpbox_proxy::{Client, Connection, HttpClient, PolicyGate, UpstreamOptions};
 use tpt_mcpbox_router::mcp::ToolHandler;
 use tpt_mcpbox_router::{Limiter, Limits, Metrics, Router};
@@ -138,6 +139,9 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
     if let Some(audit) = audit {
         router = router.with_audit(audit);
     }
+    if let Some(limit) = config.server.request_timeout {
+        router = router.with_request_timeout(limit);
+    }
 
     let runtime = Runtime::new().map_err(|error| error.to_string())?;
     for tool in config.tools.iter().filter(|t| t.enabled) {
@@ -170,10 +174,13 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
         let listed = connection.list_tools().await.map_err(fail)?;
         // Only ask for what the upstream says it has, so a server without
         // resources is not sent a request it would answer with an error.
-        let resources = if handshake.capabilities.resources.is_some() {
-            connection.list_resources().await.map_err(fail)?
+        let (resources, templates) = if handshake.capabilities.resources.is_some() {
+            (
+                connection.list_resources().await.map_err(fail)?,
+                connection.list_resource_templates().await.map_err(fail)?,
+            )
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         let prompts = if handshake.capabilities.prompts.is_some() {
             connection.list_prompts().await.map_err(fail)?
@@ -186,11 +193,31 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
             .into_iter()
             .filter(|tool| visible.allows(&tool.name))
             .collect();
+        let mut tool_names: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
+        tool_names.sort();
         let gate = Arc::new(PolicyGate::new(
             upstream.name.clone(),
             connection,
             Arc::clone(&policy),
         ));
+        if upstream.transport.stdio.is_some() {
+            // Only supervised upstreams have an up/down state to report.
+            let metrics = router.metrics();
+            let name = upstream.name.clone();
+            metrics.set_upstream_up(&name, true);
+            supervise(
+                Arc::clone(&gate),
+                respawn(
+                    upstream.clone(),
+                    secrets.clone(),
+                    Arc::clone(&redactor),
+                    tool_names,
+                    startup_audit.clone(),
+                ),
+                RestartPolicy::default(),
+                Arc::new(move |up| metrics.set_upstream_up(&name, up)),
+            );
+        }
         let prefix = upstream.prefix.as_deref();
         record(
             startup_audit.as_deref(),
@@ -200,6 +227,7 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
                 "transport": if upstream.transport.stdio.is_some() { "stdio" } else { "http" },
                 "tools": tools.len(),
                 "resources": resources.len(),
+                "resource_templates": templates.len(),
                 "prompts": prompts.len(),
             }),
         )?;
@@ -208,6 +236,9 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
             .map_err(|error| format!("upstream `{}`: {error}", upstream.name))?;
         router
             .add_upstream_resources(Arc::clone(&gate), resources)
+            .map_err(|error| format!("upstream `{}`: {error}", upstream.name))?;
+        router
+            .add_upstream_resource_templates(Arc::clone(&gate), templates)
             .map_err(|error| format!("upstream `{}`: {error}", upstream.name))?;
         router
             .add_upstream_prompts(prefix, gate, prompts)
@@ -547,6 +578,56 @@ fn connect(
     Err(format!("upstream `{}` has no transport", upstream.name))
 }
 
+/// Builds the restart function for one stdio upstream. A replacement must
+/// complete the handshake and list the same tools the router registered at
+/// startup, because the router's catalog cannot change while serving.
+fn respawn(
+    upstream: UpstreamConfig,
+    secrets: SecretStore,
+    redactor: Arc<Redactor>,
+    expected: Vec<String>,
+    audit: Option<Arc<AuditLog>>,
+) -> Respawn {
+    Arc::new(move || {
+        let upstream = upstream.clone();
+        let secrets = secrets.clone();
+        let redactor = Arc::clone(&redactor);
+        let expected = expected.clone();
+        let audit = audit.clone();
+        Box::pin(async move {
+            let connection = connect(&upstream, &secrets, &redactor)?;
+            connection
+                .initialize()
+                .await
+                .map_err(|error| error.to_string())?;
+            let listed = connection
+                .list_tools()
+                .await
+                .map_err(|error| error.to_string())?;
+            let visible = Visibility::new(&upstream)?;
+            let mut names: Vec<String> = listed
+                .into_iter()
+                .map(|tool| tool.name)
+                .filter(|name| visible.allows(name))
+                .collect();
+            names.sort();
+            if names != expected {
+                return Err(format!(
+                    "tool list changed: {} tool(s) now, {} at startup",
+                    names.len(),
+                    expected.len()
+                ));
+            }
+            record(
+                audit.as_deref(),
+                "upstream_restarted",
+                json!({ "upstream": upstream.name }),
+            )?;
+            Ok(connection)
+        })
+    })
+}
+
 /// Allow and deny globs for one upstream's tools. An empty allow list means
 /// every tool, subject to the deny list.
 struct Visibility {
@@ -612,6 +693,115 @@ fn parse_descriptors(json: &str) -> Result<Vec<Tool>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `fake_upstream` example, built next to the test binary. A plain
+    /// `cargo test -p tpt-mcpbox-cli` builds it; a name-filtered run may not.
+    fn fake_upstream() -> std::path::PathBuf {
+        let mut dir = std::env::current_exe().expect("test binary path");
+        dir.pop(); // deps
+        dir.pop(); // debug
+        let path = dir
+            .join("examples")
+            .join(format!("fake_upstream{}", std::env::consts::EXE_SUFFIX));
+        assert!(
+            path.exists(),
+            "build the fake first: cargo build -p tpt-mcpbox-cli --example fake_upstream"
+        );
+        path
+    }
+
+    /// Builds a hub whose only upstream is the fake, with an allow-all policy.
+    /// Single quotes keep Windows paths free of YAML escapes.
+    async fn hub_with_fake_upstream(dir: &Path, state: &Path, log: &Path) -> Hub {
+        let yaml = format!(
+            "policy:\n  default: deny\n  rules:\n    - id: allow-all\n      effect: allow\n      tool: '*'\n\
+             upstreams:\n  - name: fake\n    transport:\n      stdio:\n        command: '{}'\n        args: ['{}', '{}']\n",
+            fake_upstream().display(),
+            state.display(),
+            log.display(),
+        );
+        let config = tpt_mcpbox_config::load::load_str(&yaml, "test config").expect("config loads");
+        build_router(&config, dir).await.expect("hub builds")
+    }
+
+    async fn call(router: &Router, tool: &str) -> bool {
+        router
+            .call("agent", tool, None, tpt_mcpbox_runtime::CancelToken::new())
+            .await
+            .is_ok()
+    }
+
+    fn starts(log: &Path) -> usize {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn crashed_upstream_is_restarted_and_serves_again() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let state = dir.path().join("state");
+        let log = dir.path().join("starts.log");
+        std::fs::write(&state, "same").expect("state written");
+        let hub = hub_with_fake_upstream(dir.path(), &state, &log).await;
+        let router = Arc::clone(&hub.router);
+
+        assert!(call(&router, "echo").await, "the first child serves calls");
+        // The child exits without replying, so the call fails.
+        assert!(!call(&router, "crash").await);
+
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while !call(&router, "echo").await {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        })
+        .await
+        .expect("the restarted upstream serves calls again");
+        assert!(starts(&log) >= 2, "a second child was started");
+        // The gauge is set just after the swap, so wait for it.
+        let metrics = router.metrics();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !metrics
+                .render()
+                .contains("tpt_mcpbox_upstream_up{upstream=\"fake\"} 1")
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the upstream is reported up again");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn restart_that_changes_the_tool_list_is_refused() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let state = dir.path().join("state");
+        let log = dir.path().join("starts.log");
+        std::fs::write(&state, "same").expect("state written");
+        let hub = hub_with_fake_upstream(dir.path(), &state, &log).await;
+        let router = Arc::clone(&hub.router);
+
+        assert!(call(&router, "echo").await);
+        // The next child will expose a different tool list.
+        std::fs::write(&state, "changed").expect("state written");
+        assert!(!call(&router, "crash").await);
+
+        // Wait until the supervisor has retried at least twice. The log proves
+        // the attempts ran, so the failing echo below means the changed
+        // replacement was refused, not that no restart was tried.
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while starts(&log) < 3 {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        })
+        .await
+        .expect("the supervisor retried");
+        assert!(
+            !call(&router, "echo").await,
+            "a replacement with different tools must not be swapped in"
+        );
+    }
 
     #[test]
     fn descriptors_parse_into_tools() {
