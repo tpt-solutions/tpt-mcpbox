@@ -22,12 +22,15 @@ use std::sync::Arc;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tpt_mcpbox_config::Redactor;
+use tpt_mcpbox_protocol::completion::CompleteRequest;
 use tpt_mcpbox_protocol::jsonrpc::{
     Error as RpcError, ErrorCode, Id, Request, Response, ServerMessage,
 };
 use tpt_mcpbox_protocol::method;
 use tpt_mcpbox_protocol::prompts::{GetPromptRequest, ListPromptsResult};
-use tpt_mcpbox_protocol::resources::{ListResourcesResult, ReadResourceRequest};
+use tpt_mcpbox_protocol::resources::{
+    ListResourceTemplatesResult, ListResourcesResult, ReadResourceRequest,
+};
 use tpt_mcpbox_protocol::server::{Handler, HandlerFuture};
 use tpt_mcpbox_protocol::session::Session;
 use tpt_mcpbox_protocol::tools::{CallToolRequest, CallToolResult, ListToolsResult};
@@ -65,9 +68,11 @@ impl ToolHandler {
             method::tools::LIST => self.list(id),
             method::tools::CALL => self.call(session, id, request.params).await,
             method::resources::LIST => self.resources_list(id),
+            method::resources::TEMPLATES_LIST => self.templates_list(id),
             method::resources::READ => self.resource_read(session, id, request.params).await,
             method::prompts::LIST => self.prompts_list(id),
             method::prompts::GET => self.prompt_get(session, id, request.params).await,
+            method::completion::COMPLETE => self.complete(session, id, request.params).await,
             other => self.failure(id, RpcError::method_not_found(other)),
         }
     }
@@ -75,6 +80,14 @@ impl ToolHandler {
     fn resources_list(&self, id: Id) -> ServerMessage {
         let result = ListResourcesResult {
             resources: self.router.list_resources(),
+            next_cursor: None,
+        };
+        self.success(id, &result)
+    }
+
+    fn templates_list(&self, id: Id) -> ServerMessage {
+        let result = ListResourceTemplatesResult {
+            resource_templates: self.router.list_resource_templates(),
             next_cursor: None,
         };
         self.success(id, &result)
@@ -138,6 +151,30 @@ impl ToolHandler {
         }
     }
 
+    async fn complete(&self, session: &Session, id: Id, params: Option<Value>) -> ServerMessage {
+        let Some(request) = parse::<CompleteRequest>(params) else {
+            return self.failure(
+                id,
+                RpcError::invalid_params("completion/complete requires a ref and an argument"),
+            );
+        };
+        match self.router.complete(session.id().as_str(), request).await {
+            Ok(result) => self.success(id, &result),
+            Err(RouterError::UnknownPrompt(name)) => self.failure(
+                id,
+                RpcError::invalid_params(format!("unknown prompt `{name}`")),
+            ),
+            Err(RouterError::UnknownResource(uri)) => self.failure(
+                id,
+                RpcError::invalid_params(format!("no resource template `{uri}`")),
+            ),
+            Err(err) => self.failure(
+                id,
+                RpcError::new(ErrorCode::INTERNAL_ERROR, err.to_string()),
+            ),
+        }
+    }
+
     fn list(&self, id: Id) -> ServerMessage {
         let result = ListToolsResult {
             tools: self.router.list(),
@@ -160,13 +197,16 @@ impl ToolHandler {
             }
         };
 
+        // If the protocol layer cancels this request, it drops this future. The
+        // guard then stops any running guest, which exits within one epoch tick.
+        let stop = StopOnDrop(CancelToken::new());
         let outcome = self
             .router
             .call(
                 session.id().as_str(),
                 &params.name,
                 params.arguments,
-                CancelToken::new(),
+                stop.0.clone(),
             )
             .await;
 
@@ -221,6 +261,17 @@ impl ToolHandler {
     }
 }
 
+/// Cancels the wrapped token when dropped. Dropping the call future is how a
+/// cancelled request reaches the runtime, since the tool task keeps running
+/// after the router future is gone.
+struct StopOnDrop(CancelToken);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
 /// Deserialises request params, or `None` when they are absent or malformed.
 fn parse<T: DeserializeOwned>(params: Option<Value>) -> Option<T> {
     serde_json::from_value(params?).ok()
@@ -234,6 +285,13 @@ impl Handler for ToolHandler {
 
 #[cfg(test)]
 mod tests {
+    use tpt_mcpbox_policy::Policy;
+    use tpt_mcpbox_protocol::Implementation;
+    use tpt_mcpbox_protocol::model::ServerCapabilities;
+    use tpt_mcpbox_protocol::session::SessionConfig;
+    use tpt_mcpbox_protocol::tools::Tool;
+    use tpt_mcpbox_proxy::{Client, PolicyGate, UpstreamOptions};
+
     use super::*;
 
     fn handler() -> ToolHandler {
@@ -246,6 +304,15 @@ mod tests {
                 .expect("empty policy compiles"),
             ),
         )))
+    }
+
+    #[test]
+    fn dropping_the_stop_guard_cancels_the_call() {
+        let token = CancelToken::new();
+        let guard = StopOnDrop(token.clone());
+        assert!(!token.is_cancelled());
+        drop(guard);
+        assert!(token.is_cancelled());
     }
 
     #[test]
@@ -295,5 +362,169 @@ mod tests {
         };
         let message = response.error.unwrap().message;
         assert!(!message.contains("sk-live-123456789"), "{message}");
+    }
+
+    /// Upstream whose `tools/call` fails with a message that echoes a credential.
+    fn leaky_gate(policy: Arc<Policy>) -> PolicyGate {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let (client_side, server_side) = tokio::io::duplex(64 * 1024);
+        let (read, write) = tokio::io::split(client_side);
+        let client = Client::connect(read, write, UpstreamOptions::default());
+        let (sread, mut swrite) = tokio::io::split(server_side);
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(sread).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let msg: Value = serde_json::from_str(&line).unwrap();
+                if msg["method"] == "tools/call" {
+                    let reply = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": msg["id"],
+                        "error": { "code": -32000, "message": "auth failed for sk-live-LEAK-1234" }
+                    });
+                    swrite
+                        .write_all(format!("{reply}\n").as_bytes())
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+        PolicyGate::new("leaky", client, policy)
+    }
+
+    /// A router that allows tool `t` and sends it to [`leaky_gate`].
+    fn leaky_router() -> Router {
+        let rule = tpt_mcpbox_config::model::Rule {
+            id: "allow-t".to_owned(),
+            description: None,
+            effect: tpt_mcpbox_config::model::Effect::Allow,
+            tool: Some("t".to_owned()),
+            method: None,
+            args: Default::default(),
+            hosts: Vec::new(),
+            paths: Vec::new(),
+            caller: None,
+            uris: Vec::new(),
+            constraints: None,
+        };
+        let policy = Arc::new(
+            Policy::from_config(&tpt_mcpbox_config::model::PolicyConfig {
+                rules: vec![rule],
+                ..Default::default()
+            })
+            .expect("policy compiles"),
+        );
+        let mut router = Router::new(
+            crate::Limiter::new([], crate::limiter::Limits::default()),
+            Arc::clone(&policy),
+        );
+        let tool: Tool = serde_json::from_value(serde_json::json!({
+            "name": "t",
+            "inputSchema": { "type": "object" }
+        }))
+        .expect("tool parses");
+        router
+            .add_upstream(None, Arc::new(leaky_gate(policy)), vec![tool])
+            .unwrap();
+        router
+    }
+
+    #[tokio::test]
+    async fn upstream_error_text_is_scrubbed_before_it_reaches_the_agent() {
+        let secret = "sk-live-LEAK-1234";
+        let router = leaky_router();
+        let mut redactor = Redactor::new();
+        redactor.add(secret);
+        let handler = ToolHandler::new(Arc::new(router)).with_redactor(Arc::new(redactor));
+        let session = Arc::new(Session::new(SessionConfig::new(
+            Implementation::new("tpt-mcpbox", "0.1.0"),
+            ServerCapabilities::full(),
+        )));
+        let request = Request::new(Id::Number(1), method::tools::CALL)
+            .with_params(serde_json::json!({ "name": "t", "arguments": {} }));
+
+        let message = handler
+            .handle(&session, request)
+            .await
+            .expect("handled")
+            .expect("replied");
+        let rendered = message.into_value().unwrap().to_string();
+        assert!(rendered.contains("auth failed"), "{rendered}");
+        assert!(
+            !rendered.contains(secret),
+            "credential reached the agent: {rendered}"
+        );
+    }
+
+    /// Collects whatever the tracing subscriber writes, for inspection.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+        type Writer = Captured;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// One capture for the whole test binary. A thread-local subscriber did not
+    /// see events reliably here, because tracing caches call-site interest
+    /// across tests.
+    fn captured_logs() -> &'static Captured {
+        static CAPTURED: std::sync::OnceLock<Captured> = std::sync::OnceLock::new();
+        CAPTURED.get_or_init(|| {
+            let captured = Captured::default();
+            let subscriber = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::TRACE)
+                .with_ansi(false)
+                .with_writer(captured.clone())
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("no other subscriber is installed in this test binary");
+            captured
+        })
+    }
+
+    #[tokio::test]
+    async fn logs_and_metrics_never_carry_argument_values_or_upstream_secrets() {
+        let captured = captured_logs();
+        let router = leaky_router();
+        let metrics = router.metrics();
+        let argument_secret = "sk-live-ARG-5678";
+        let arguments = serde_json::json!({ "token": argument_secret })
+            .as_object()
+            .cloned();
+        // A caller name no other test uses, so finding it proves this call's
+        // events were captured.
+        let outcome = router
+            .call("logs-test-caller", "t", arguments, CancelToken::new())
+            .await;
+        assert!(outcome.is_err(), "the leaky upstream fails the call");
+
+        let logs = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            logs.contains("logs-test-caller"),
+            "capture missed the call: {logs}"
+        );
+        let rendered_metrics = metrics.render();
+        for secret in [argument_secret, "sk-live-LEAK-1234"] {
+            assert!(!logs.contains(secret), "log leaked {secret}: {logs}");
+            assert!(
+                !rendered_metrics.contains(secret),
+                "metrics leaked {secret}: {rendered_metrics}"
+            );
+        }
     }
 }

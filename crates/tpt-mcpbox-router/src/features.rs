@@ -4,7 +4,8 @@
 //! Resources and prompts, aggregated alongside tools.
 //!
 //! Resources are keyed by URI, and a URI that two upstreams both serve is
-//! refused rather than overridden. Prompts are namespaced the same way as
+//! refused rather than overridden. A read that matches no exact URI is tried
+//! against the upstreams' resource templates, in registration order. Prompts are namespaced the same way as
 //! tools (`<prefix><name>`) and are refused on collision.
 //!
 //! Each call runs inside the same audit bracket as a tool call, and passes the
@@ -16,16 +17,20 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
+use tpt_mcpbox_protocol::completion::{CompleteRequest, CompleteResult, Reference};
 use tpt_mcpbox_protocol::prompts::{GetPromptResult, Prompt};
-use tpt_mcpbox_protocol::resources::{ReadResourceResult, Resource};
+use tpt_mcpbox_protocol::resources::{ReadResourceResult, Resource, ResourceTemplate};
 use tpt_mcpbox_proxy::PolicyGate;
 
 use crate::dispatch::{PromptRoute, Router, RouterError};
+use crate::templates::{Pattern, TemplateRoute};
 
 /// Client-limit key for resource reads. No per-tool limits are keyed on it.
 const RESOURCE_READ_KEY: &str = "resources/read";
 /// Client-limit key for prompt gets.
 const PROMPT_GET_KEY: &str = "prompts/get";
+/// Client-limit key for completions.
+const COMPLETE_KEY: &str = "completion/complete";
 
 impl Router {
     /// Registers an upstream's resources under their URIs.
@@ -57,6 +62,46 @@ impl Router {
             self.resources
                 .insert(resource.uri.clone(), Arc::clone(&gate));
             self.resource_list.insert(resource.uri.clone(), resource);
+        }
+        Ok(())
+    }
+
+    /// Registers an upstream's resource templates. A template whose pattern
+    /// cannot be parsed is left out with a warning, since routing it would be a
+    /// guess. Nothing is added if a template repeats one already registered.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RouterError::Conflict`] naming the first repeated `uriTemplate`.
+    pub fn add_upstream_resource_templates(
+        &mut self,
+        gate: Arc<PolicyGate>,
+        templates: Vec<ResourceTemplate>,
+    ) -> Result<(), RouterError> {
+        let mut seen: HashSet<&str> = self
+            .resource_templates
+            .iter()
+            .map(|route| route.template.uri_template.as_str())
+            .collect();
+        if let Some(dup) = templates
+            .iter()
+            .find(|template| !seen.insert(template.uri_template.as_str()))
+        {
+            return Err(RouterError::Conflict(dup.uri_template.clone()));
+        }
+
+        for template in templates {
+            match Pattern::parse(&template.uri_template) {
+                Some(pattern) => self.resource_templates.push(TemplateRoute {
+                    template,
+                    pattern,
+                    gate: Arc::clone(&gate),
+                }),
+                None => tracing::warn!(
+                    template = %template.uri_template,
+                    "resource template uses an unsupported form; not served"
+                ),
+            }
         }
         Ok(())
     }
@@ -108,6 +153,15 @@ impl Router {
         self.resource_list.values().cloned().collect()
     }
 
+    /// Every resource template, in registration order.
+    #[must_use]
+    pub fn list_resource_templates(&self) -> Vec<ResourceTemplate> {
+        self.resource_templates
+            .iter()
+            .map(|route| route.template.clone())
+            .collect()
+    }
+
     /// Every prompt under its exposed name, in name order.
     #[must_use]
     pub fn list_prompts(&self) -> Vec<Prompt> {
@@ -141,10 +195,16 @@ impl Router {
         caller: &str,
         uri: &str,
     ) -> Result<ReadResourceResult, RouterError> {
-        let gate = self
-            .resources
-            .get(uri)
-            .ok_or_else(|| RouterError::UnknownResource(uri.to_owned()))?;
+        // An exact URI wins; otherwise the first template that expands to it.
+        let gate = match self.resources.get(uri) {
+            Some(gate) => gate,
+            None => self
+                .resource_templates
+                .iter()
+                .find(|route| route.pattern.matches(uri))
+                .map(|route| &route.gate)
+                .ok_or_else(|| RouterError::UnknownResource(uri.to_owned()))?,
+        };
         let _in_flight = self.lifecycle.begin()?;
         let _permit = self.limiter.acquire(RESOURCE_READ_KEY, caller)?;
         gate.read_resource(caller, uri)
@@ -182,6 +242,78 @@ impl Router {
         .await
     }
 
+    /// Completes a prompt argument or a resource template variable through the
+    /// upstream that owns it. The reference is rewritten to that upstream's own
+    /// name first, since an exposed prompt name may carry a prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RouterError::UnknownPrompt`] or [`RouterError::UnknownResource`]
+    /// when nothing owns the reference, and [`RouterError::Denied`] when the
+    /// policy refuses it.
+    pub async fn complete(
+        &self,
+        caller: &str,
+        request: CompleteRequest,
+    ) -> Result<CompleteResult, RouterError> {
+        let subject = match &request.r#ref {
+            Reference::Prompt { name, .. } => name.clone(),
+            Reference::Resource { uri } => uri.clone(),
+        };
+        self.audited(
+            "completion",
+            "ref",
+            &subject,
+            caller,
+            Map::new(),
+            self.serve_complete(caller, request),
+        )
+        .await
+    }
+
+    async fn serve_complete(
+        &self,
+        caller: &str,
+        request: CompleteRequest,
+    ) -> Result<CompleteResult, RouterError> {
+        match &request.r#ref {
+            Reference::Prompt { name, argument } => {
+                let route = self
+                    .prompts
+                    .get(name)
+                    .ok_or_else(|| RouterError::UnknownPrompt(name.clone()))?;
+                let _in_flight = self.lifecycle.begin()?;
+                let _permit = self.limiter.acquire(COMPLETE_KEY, caller)?;
+                let forwarded = CompleteRequest {
+                    r#ref: Reference::Prompt {
+                        name: route.upstream_name.clone(),
+                        argument: argument.clone(),
+                    },
+                    ..request
+                };
+                route
+                    .gate
+                    .complete(caller, &forwarded)
+                    .await
+                    .map_err(RouterError::from)
+            }
+            Reference::Resource { uri } => {
+                let route = self
+                    .resource_templates
+                    .iter()
+                    .find(|route| route.template.uri_template == *uri)
+                    .ok_or_else(|| RouterError::UnknownResource(uri.clone()))?;
+                let _in_flight = self.lifecycle.begin()?;
+                let _permit = self.limiter.acquire(COMPLETE_KEY, caller)?;
+                route
+                    .gate
+                    .complete(caller, &request)
+                    .await
+                    .map_err(RouterError::from)
+            }
+        }
+    }
+
     async fn serve_prompt(
         &self,
         caller: &str,
@@ -211,6 +343,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, duplex};
     use tpt_mcpbox_config::model::{Effect, PolicyConfig, Rule};
     use tpt_mcpbox_policy::Policy;
+    use tpt_mcpbox_protocol::completion::Argument;
     use tpt_mcpbox_proxy::{Client, UpstreamOptions};
 
     use super::*;
@@ -276,6 +409,13 @@ mod tests {
                         counter.fetch_add(1, Ordering::SeqCst);
                         json!({ "messages": [] })
                     }
+                    Some("completion/complete") => {
+                        let name = msg["params"]["ref"]["name"].as_str().unwrap_or_default();
+                        let value = msg["params"]["argument"]["value"]
+                            .as_str()
+                            .unwrap_or_default();
+                        json!({ "completion": { "values": [format!("{name}:{value}")] } })
+                    }
                     _ => continue,
                 };
                 let reply = json!({ "jsonrpc": "2.0", "id": msg["id"], "result": result });
@@ -331,6 +471,106 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.contents.len(), 1);
+    }
+
+    fn template(uri_template: &str) -> ResourceTemplate {
+        serde_json::from_value(json!({ "uriTemplate": uri_template, "name": "t" }))
+            .expect("template parses")
+    }
+
+    #[tokio::test]
+    async fn expanded_template_uri_is_read_through_its_upstream() {
+        let policy = policy(vec![method_rule(
+            "allow-read",
+            "resources/read",
+            Effect::Allow,
+        )]);
+        let (gate, _) = gate(Arc::clone(&policy));
+        let mut router = router(policy);
+        router
+            .add_upstream_resource_templates(Arc::new(gate), vec![template("logs://{app}/{date}")])
+            .unwrap();
+
+        assert_eq!(router.list_resource_templates().len(), 1);
+        let result = router
+            .read_resource("agent", "logs://web/2026-10-28")
+            .await
+            .unwrap();
+        assert_eq!(result.contents.len(), 1);
+        // A URI that does not expand the template is still unknown.
+        assert!(matches!(
+            router.read_resource("agent", "logs://web/a/b").await,
+            Err(RouterError::UnknownResource(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn repeated_template_is_refused() {
+        let policy = policy(Vec::new());
+        let (first, _) = gate(Arc::clone(&policy));
+        let (second, _) = gate(Arc::clone(&policy));
+        let mut router = router(policy);
+        router
+            .add_upstream_resource_templates(Arc::new(first), vec![template("logs://{app}")])
+            .unwrap();
+        assert!(matches!(
+            router.add_upstream_resource_templates(Arc::new(second), vec![template("logs://{app}")]),
+            Err(RouterError::Conflict(ref name)) if name == "logs://{app}"
+        ));
+        assert_eq!(
+            router.list_resource_templates().len(),
+            1,
+            "nothing added on conflict"
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_completion_is_routed_with_the_upstream_name() {
+        let policy = policy(vec![method_rule(
+            "allow-complete",
+            "completion/complete",
+            Effect::Allow,
+        )]);
+        let (gate, _) = gate(Arc::clone(&policy));
+        let mut router = router(policy);
+        router
+            .add_upstream_prompts(Some("kb__"), Arc::new(gate), vec![prompt("summarise")])
+            .unwrap();
+
+        let request = CompleteRequest {
+            r#ref: Reference::Prompt {
+                name: "kb__summarise".to_owned(),
+                argument: Some("topic".to_owned()),
+            },
+            argument: Argument {
+                name: "topic".to_owned(),
+                value: "ab".to_owned(),
+            },
+            context: None,
+        };
+        let result = router.complete("agent", request).await.unwrap();
+        // The upstream saw its own name, not the prefixed one.
+        assert_eq!(result.completion.values, ["summarise:ab"]);
+    }
+
+    #[tokio::test]
+    async fn completion_for_an_unknown_prompt_is_refused() {
+        let router = router(policy(Vec::new()));
+        let request = CompleteRequest {
+            r#ref: Reference::Prompt {
+                name: "nope".to_owned(),
+                argument: None,
+            },
+            argument: Argument {
+                name: "x".to_owned(),
+                value: String::new(),
+            },
+            context: None,
+        };
+        assert!(matches!(
+            router.complete("agent", request).await,
+            Err(RouterError::UnknownPrompt(_))
+        ));
     }
 
     #[tokio::test]

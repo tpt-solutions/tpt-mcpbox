@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::metrics::Metrics;
 use serde_json::{Map, Value, json};
@@ -32,6 +32,7 @@ use tracing::Instrument as _;
 
 use crate::lifecycle::{Lifecycle, ShuttingDown};
 use crate::limiter::{Limiter, Rejection};
+use crate::templates::TemplateRoute;
 
 /// Why a call could not be completed.
 #[derive(Debug, thiserror::Error)]
@@ -68,6 +69,9 @@ pub enum RouterError {
     /// The blocking task running a Wasm tool panicked or was cancelled.
     #[error("tool task did not complete: {0}")]
     TaskJoin(String),
+    /// The call ran past the router's request timeout and was cancelled.
+    #[error("tool call exceeded the {0:?} request timeout")]
+    TimedOut(Duration),
     /// The audit record could not be written. Raised before dispatch, so the
     /// call does not run unrecorded.
     #[error(transparent)]
@@ -95,9 +99,43 @@ impl RouterError {
             Self::Tool(_) => "tool_error",
             Self::Encode(_) => "invalid_arguments",
             Self::TaskJoin(_) => "internal_error",
+            Self::TimedOut(_) => "timed_out",
             Self::Audit(_) => "audit_error",
             Self::UnknownResource(_) => "unknown_resource",
             Self::UnknownPrompt(_) => "unknown_prompt",
+        }
+    }
+}
+
+/// Writes the `finish` record for a call that was dropped before it completed,
+/// for example when the agent cancelled it. Without this the log would end
+/// with a `start` that has no match. Disarmed once the call completes.
+struct AbandonedCall {
+    audit: Option<Arc<AuditLog>>,
+    kind: &'static str,
+    finish: Option<Map<String, Value>>,
+    started: Instant,
+}
+
+impl AbandonedCall {
+    /// Takes the finish record back, so the caller writes it and `drop` does not.
+    fn disarm(&mut self) -> Map<String, Value> {
+        self.finish.take().unwrap_or_default()
+    }
+}
+
+impl Drop for AbandonedCall {
+    fn drop(&mut self) {
+        let (Some(log), Some(mut finish)) = (self.audit.take(), self.finish.take()) else {
+            return;
+        };
+        let duration_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        finish.insert("outcome".to_owned(), json!("cancelled"));
+        finish.insert("duration_ms".to_owned(), json!(duration_ms));
+        // Synchronous on purpose: `drop` cannot await. This runs only on the
+        // cancel path, and the fsync is the same one the normal path pays.
+        if let Err(err) = log.append(self.kind, Value::Object(finish)) {
+            tracing::error!("audit finish record failed: {err}");
         }
     }
 }
@@ -154,12 +192,18 @@ pub struct Router {
     pub(crate) resources: BTreeMap<String, Arc<PolicyGate>>,
     /// Resource descriptors, as listed to the agent.
     pub(crate) resource_list: BTreeMap<String, Resource>,
+    /// Resource templates, in registration order. Reads that no exact URI
+    /// matches are tried against these.
+    pub(crate) resource_templates: Vec<TemplateRoute>,
     /// Exposed prompt name → the upstream and its own name for the prompt.
     pub(crate) prompts: BTreeMap<String, PromptRoute>,
     /// Prompt descriptors under their exposed names.
     pub(crate) prompt_list: BTreeMap<String, Prompt>,
     /// Counters and latency histograms for every call.
     pub(crate) metrics: Arc<Metrics>,
+    /// Longest a `tools/call` may run, end to end. `None` leaves only each
+    /// tool's own time limit.
+    pub(crate) request_timeout: Option<Duration>,
 }
 
 /// Where a prompt lives: the upstream gate and the prompt's name there.
@@ -189,10 +233,20 @@ impl Router {
             audit: None,
             resources: BTreeMap::new(),
             resource_list: BTreeMap::new(),
+            resource_templates: Vec::new(),
             prompts: BTreeMap::new(),
             prompt_list: BTreeMap::new(),
             metrics: Arc::new(Metrics::new()),
+            request_timeout: None,
         }
+    }
+
+    /// Caps every `tools/call` at `limit`. A call that runs longer is cancelled
+    /// and reported as a tool error with the outcome `timed_out`.
+    #[must_use]
+    pub fn with_request_timeout(mut self, limit: Duration) -> Self {
+        self.request_timeout = Some(limit);
+        self
     }
 
     /// The metrics this router updates. Share it with the endpoint that renders
@@ -213,6 +267,7 @@ impl Router {
 
     /// Registers a Wasm tool under the name in its descriptor.
     pub fn add_wasm(&mut self, tool: Arc<LoadedTool>, descriptor: Tool) -> Result<(), RouterError> {
+        self.metrics.track_pool(&tool);
         let exposed = descriptor.name.clone();
         let backend = Backend::Wasm {
             tool,
@@ -314,15 +369,23 @@ impl Router {
         let mut extra = Map::new();
         extra.insert("arg_keys".to_owned(), json!(keys));
 
-        self.audited(
-            "tool_call",
-            "tool",
-            name,
-            caller,
-            extra,
-            self.dispatch(caller, name, arguments, cancel),
-        )
-        .await
+        let work = self.dispatch(caller, name, arguments, cancel.clone());
+        let bounded = async {
+            let Some(limit) = self.request_timeout else {
+                return work.await;
+            };
+            match tokio::time::timeout(limit, work).await {
+                Ok(result) => result,
+                Err(_) => {
+                    // Dropping `work` does not stop a Wasm tool that is already
+                    // running on a blocking thread, so the token is set here.
+                    cancel.cancel();
+                    Err(RouterError::TimedOut(limit))
+                }
+            }
+        };
+        self.audited("tool_call", "tool", name, caller, extra, bounded)
+            .await
     }
 
     /// Runs `work` between a `start` and a `finish` audit record.
@@ -340,6 +403,8 @@ impl Router {
         work: impl Future<Output = Result<T, RouterError>>,
     ) -> Result<T, RouterError> {
         let started = Instant::now();
+        // Counted until the guard drops, which also covers a dropped call.
+        let _in_flight = self.metrics.enter();
         // One span per request. Only names, outcomes and durations go on it:
         // argument values never reach the span.
         let span = tracing::info_span!(
@@ -359,7 +424,21 @@ impl Router {
         start.extend(extra);
         self.record(kind, Value::Object(start)).await?;
 
+        // Built before the work runs, so a call dropped midway (cancelled by the
+        // agent, or timed out by its caller) still gets a finish record.
+        let mut base = Map::new();
+        base.insert("phase".to_owned(), json!("finish"));
+        base.insert("caller".to_owned(), json!(caller));
+        base.insert(subject_key.to_owned(), json!(subject));
+        let mut abandoned = AbandonedCall {
+            audit: self.audit.clone(),
+            kind,
+            finish: Some(base),
+            started,
+        };
+
         let result = work.instrument(span.clone()).await;
+        let mut finish = abandoned.disarm();
         let outcome = result.as_ref().map_or_else(RouterError::outcome, |_| "ok");
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         self.metrics
@@ -367,10 +446,6 @@ impl Router {
 
         span.record("outcome", outcome);
         span.record("duration_ms", duration_ms);
-        let mut finish = Map::new();
-        finish.insert("phase".to_owned(), json!("finish"));
-        finish.insert("caller".to_owned(), json!(caller));
-        finish.insert(subject_key.to_owned(), json!(subject));
         finish.insert("outcome".to_owned(), json!(outcome));
         finish.insert("duration_ms".to_owned(), json!(duration_ms));
         if let Err(RouterError::Denied { rule_id, .. }) = &result {
@@ -510,6 +585,10 @@ mod tests {
             while let Ok(Some(line)) = lines.next_line().await {
                 let msg: Value = serde_json::from_str(&line).unwrap();
                 if msg["method"] == "tools/call" {
+                    // `hang` never answers, so callers can exercise timeouts.
+                    if msg["params"]["name"] == "hang" {
+                        continue;
+                    }
                     let reply = json!({
                         "jsonrpc": "2.0",
                         "id": msg["id"],
@@ -689,6 +768,61 @@ mod audit_tests {
             .lines()
             .map(|line| serde_json::from_str::<Value>(line).unwrap()["data"].clone())
             .collect()
+    }
+
+    #[tokio::test]
+    async fn request_timeout_reports_timed_out_and_cancels_the_tool() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let policy = policy(vec![allow("hang")]);
+        let log = Arc::new(AuditLog::open(&path).unwrap());
+        let mut router = Router::new(Limiter::new([], Limits::default()), Arc::clone(&policy))
+            .with_audit(log)
+            .with_request_timeout(Duration::from_millis(50));
+        router
+            .add_upstream(None, gate(policy), vec![tool("hang")])
+            .unwrap();
+
+        let cancel = CancelToken::new();
+        let outcome = router.call("agent", "hang", None, cancel.clone()).await;
+        assert!(matches!(
+            outcome,
+            Err(RouterError::TimedOut(limit)) if limit == Duration::from_millis(50)
+        ));
+        assert!(
+            cancel.is_cancelled(),
+            "a timed-out tool must be told to stop"
+        );
+        let finish = entries(&path).pop().expect("a finish record");
+        assert_eq!(finish["phase"], "finish");
+        assert_eq!(finish["outcome"], "timed_out");
+    }
+
+    #[tokio::test]
+    async fn dropped_call_still_writes_a_finish_record() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let router = audited_router(&path, vec![allow("echo")]);
+
+        // The start record is an fsync on a blocking thread, so the timeout must
+        // be long enough for it. `pending` never finishes, so the timeout always
+        // fires, and only the length of the wait changes.
+        let never = std::future::pending::<Result<(), RouterError>>();
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            router.audited("tool_call", "tool", "echo", "agent", Map::new(), never),
+        )
+        .await;
+
+        let records = entries(&path);
+        assert_eq!(records.len(), 2, "start and finish: {records:?}");
+        assert_eq!(records[1]["phase"], "finish");
+        assert_eq!(records[1]["outcome"], "cancelled");
+        assert_eq!(
+            router.metrics().in_flight(),
+            0,
+            "a dropped call is no longer in flight"
+        );
     }
 
     #[tokio::test]

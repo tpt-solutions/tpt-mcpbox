@@ -14,10 +14,15 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 use tpt_mcpbox_config::model::RateLimit;
+
+/// How often idle client gates are swept out of the map. A sweep only removes
+/// gates that are indistinguishable from a fresh one, so the interval affects
+/// memory use and nothing else.
+const CLIENT_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Rate and concurrency settings for one gate, in a form the limiter can use
 /// without depending on configuration types at every call site.
@@ -71,7 +76,14 @@ pub struct Permit {
 pub struct Limiter {
     tools: HashMap<String, Gate>,
     client_limits: Limits,
-    clients: Mutex<HashMap<String, Arc<Gate>>>,
+    clients: Mutex<Clients>,
+}
+
+/// Per-client gates, plus when the map was last swept for idle entries.
+#[derive(Debug)]
+struct Clients {
+    gates: HashMap<String, Gate>,
+    last_sweep: Instant,
 }
 
 impl Limiter {
@@ -88,7 +100,10 @@ impl Limiter {
                 .map(|(name, limits)| (name.to_owned(), Gate::new(limits)))
                 .collect(),
             client_limits,
-            clients: Mutex::new(HashMap::new()),
+            clients: Mutex::new(Clients {
+                gates: HashMap::new(),
+                last_sweep: Instant::now(),
+            }),
         }
     }
 
@@ -107,11 +122,20 @@ impl Limiter {
             None => None,
         };
 
-        let client_gate = self.client_gate(client);
-        let client_permit = client_gate.admit(now).map_err(|kind| match kind {
-            GateError::Concurrency => Rejection::ClientConcurrency(client.to_owned()),
-            GateError::Rate => Rejection::ClientRate(client.to_owned()),
-        })?;
+        // The client gate is admitted under the map lock, so a sweep cannot
+        // evict a gate between looking it up and taking its permit.
+        let client_permit = {
+            let mut clients = lock(&self.clients);
+            self.sweep_if_due(&mut clients, now);
+            let gate = clients
+                .gates
+                .entry(client.to_owned())
+                .or_insert_with(|| Gate::new(self.client_limits));
+            gate.admit(now).map_err(|kind| match kind {
+                GateError::Concurrency => Rejection::ClientConcurrency(client.to_owned()),
+                GateError::Rate => Rejection::ClientRate(client.to_owned()),
+            })?
+        };
 
         Ok(Permit {
             _tool: tool_permit,
@@ -119,14 +143,20 @@ impl Limiter {
         })
     }
 
-    fn client_gate(&self, client: &str) -> Arc<Gate> {
-        let mut clients = lock(&self.clients);
-        if let Some(gate) = clients.get(client) {
-            return Arc::clone(gate);
+    /// Drops client gates that a fresh gate would match exactly. Gates that
+    /// still hold a permit, or whose bucket has not refilled, are kept, so
+    /// eviction never resets a client's budget.
+    fn sweep_if_due(&self, clients: &mut Clients, now: Instant) {
+        if now.saturating_duration_since(clients.last_sweep) < CLIENT_SWEEP_INTERVAL {
+            return;
         }
-        let gate = Arc::new(Gate::new(self.client_limits));
-        clients.insert(client.to_owned(), Arc::clone(&gate));
-        gate
+        clients.gates.retain(|_, gate| !gate.is_idle(now));
+        clients.last_sweep = now;
+    }
+
+    #[cfg(test)]
+    fn client_count(&self) -> usize {
+        lock(&self.clients).gates.len()
     }
 }
 
@@ -139,6 +169,7 @@ enum GateError {
 /// One rate bucket and one concurrency pool.
 #[derive(Debug)]
 struct Gate {
+    limits: Limits,
     bucket: Option<Mutex<Bucket>>,
     slots: Option<Arc<Semaphore>>,
 }
@@ -146,6 +177,7 @@ struct Gate {
 impl Gate {
     fn new(limits: Limits) -> Self {
         Self {
+            limits,
             bucket: limits
                 .requests_per_second
                 .map(|rate| Mutex::new(Bucket::new(rate, limits.burst))),
@@ -153,6 +185,20 @@ impl Gate {
                 .max_concurrency
                 .map(|max| Arc::new(Semaphore::new(max as usize))),
         }
+    }
+
+    /// True when the gate is indistinguishable from one built fresh at `now`:
+    /// no call holds a concurrency slot and the bucket has refilled.
+    fn is_idle(&self, now: Instant) -> bool {
+        let slots_free = match (&self.slots, self.limits.max_concurrency) {
+            (Some(slots), Some(max)) => slots.available_permits() == max as usize,
+            _ => true,
+        };
+        let refilled = self
+            .bucket
+            .as_ref()
+            .is_none_or(|bucket| lock(bucket).is_full_at(now));
+        slots_free && refilled
     }
 
     /// Takes a concurrency slot first, then a rate token. Taking the slot first
@@ -210,6 +256,18 @@ impl Bucket {
         } else {
             false
         }
+    }
+
+    /// Whether the bucket would be at capacity at `now`, without spending.
+    fn is_full_at(&self, now: Instant) -> bool {
+        let refilled = match self.last {
+            Some(last) => {
+                let elapsed = now.saturating_duration_since(last).as_secs_f64();
+                self.tokens + elapsed * self.rate
+            }
+            None => self.tokens,
+        };
+        refilled >= self.capacity
     }
 }
 
@@ -339,6 +397,49 @@ mod tests {
         );
         drop(held);
         assert!(limiter.acquire_at("t", "c", t0).is_ok());
+    }
+
+    #[test]
+    fn idle_refilled_client_gates_are_swept() {
+        let limiter = Limiter::new([], limits(Some(1.0), Some(1), None));
+        let t0 = Instant::now();
+        drop(limiter.acquire_at("a", "c1", t0).unwrap());
+        assert_eq!(limiter.client_count(), 1);
+
+        // Past the sweep interval, and c1's bucket has long since refilled.
+        let later = t0 + CLIENT_SWEEP_INTERVAL + Duration::from_secs(1);
+        drop(limiter.acquire_at("a", "c2", later).unwrap());
+        assert_eq!(limiter.client_count(), 1, "c1 should be evicted");
+    }
+
+    #[test]
+    fn client_gate_with_a_held_slot_is_kept() {
+        let limiter = Limiter::new([], limits(None, None, Some(1)));
+        let t0 = Instant::now();
+        let held = limiter.acquire_at("a", "c1", t0).unwrap();
+
+        let later = t0 + CLIENT_SWEEP_INTERVAL + Duration::from_secs(1);
+        assert_eq!(
+            limiter.acquire_at("a", "c1", later).unwrap_err(),
+            Rejection::ClientConcurrency("c1".into())
+        );
+        assert_eq!(limiter.client_count(), 1);
+        drop(held);
+    }
+
+    #[test]
+    fn unrefilled_client_gate_is_kept_so_its_budget_is_not_reset() {
+        // One token per 100 seconds: after 61 seconds the bucket is still short.
+        let limiter = Limiter::new([], limits(Some(0.01), Some(1), None));
+        let t0 = Instant::now();
+        drop(limiter.acquire_at("a", "c1", t0).unwrap());
+
+        let later = t0 + CLIENT_SWEEP_INTERVAL + Duration::from_secs(1);
+        assert_eq!(
+            limiter.acquire_at("a", "c1", later).unwrap_err(),
+            Rejection::ClientRate("c1".into())
+        );
+        assert_eq!(limiter.client_count(), 1);
     }
 
     #[test]
