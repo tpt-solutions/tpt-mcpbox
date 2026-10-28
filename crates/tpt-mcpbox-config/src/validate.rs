@@ -22,7 +22,7 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use crate::model::{Config, Effect, ToolConfig, UpstreamTransport};
+use crate::model::{Config, Effect, ToolConfig, UpstreamConfig, UpstreamTransport};
 
 /// How severe a finding is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -518,6 +518,49 @@ fn validate_upstreams(config: &Config, report: &mut ValidationReport) {
                 ));
             }
         }
+        validate_upstream_names(upstream, &path, report);
+    }
+}
+
+/// Filter entries must be non-empty, and renames must give non-empty, distinct
+/// names. Whether a rename's source exists is checked when the upstream is
+/// listed, since the config cannot know the upstream's tools.
+fn validate_upstream_names(upstream: &UpstreamConfig, path: &str, report: &mut ValidationReport) {
+    let filters = [
+        ("prompts.allow", &upstream.prompts.allow),
+        ("prompts.deny", &upstream.prompts.deny),
+        ("resources.allow", &upstream.resources.allow),
+        ("resources.deny", &upstream.resources.deny),
+    ];
+    for (field, patterns) in filters {
+        if patterns.iter().any(|pattern| pattern.trim().is_empty()) {
+            report.diagnostics.push(Diagnostic::error(
+                format!("{path}.{field}"),
+                "empty filter entry",
+            ));
+        }
+    }
+
+    let renames = [
+        ("tools.rename", &upstream.tools.rename),
+        ("prompts.rename", &upstream.prompts.rename),
+    ];
+    for (field, rename) in renames {
+        let mut targets = HashSet::new();
+        for (from, to) in rename {
+            if from.trim().is_empty() || to.trim().is_empty() {
+                report.diagnostics.push(Diagnostic::error(
+                    format!("{path}.{field}"),
+                    "rename entries need a non-empty name on both sides",
+                ));
+            } else if !targets.insert(to.as_str()) {
+                report.diagnostics.push(Diagnostic::error_with_hint(
+                    format!("{path}.{field}"),
+                    format!("two renames both become `{to}`"),
+                    "give each exposed name one source",
+                ));
+            }
+        }
     }
 }
 
@@ -652,6 +695,36 @@ mod tests {
     fn the_default_configuration_validates() {
         let report = validate(&Config::default(), ValidationMode::Serve);
         assert!(report.is_ok(), "{report}");
+    }
+
+    #[test]
+    fn upstream_renames_and_filters_are_checked() {
+        let config = parse(
+            r#"
+upstreams:
+  - name: kb
+    transport:
+      stdio:
+        command: "true"
+    tools:
+      rename:
+        a: same
+        b: same
+    resources:
+      deny: [""]
+"#,
+        );
+        let found = errors(&config);
+        assert!(
+            found
+                .iter()
+                .any(|e| e.contains("two renames both become `same`")),
+            "{found:?}"
+        );
+        assert!(
+            found.iter().any(|e| e.contains("empty filter entry")),
+            "{found:?}"
+        );
     }
 
     #[test]

@@ -377,6 +377,18 @@ pub struct UpstreamConfig {
     /// Secret bindings applied to upstream requests.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<SecretBinding>,
+    /// Renames and description overrides for this upstream's tools. The
+    /// `allow` and `deny` lists above filter tools.
+    #[serde(default, skip_serializing_if = "ToolOverrides::is_empty")]
+    pub tools: ToolOverrides,
+    /// Filter and renames for this upstream's prompts.
+    #[serde(default, skip_serializing_if = "PromptFilter::is_empty")]
+    pub prompts: PromptFilter,
+    /// Filter for this upstream's resources, by URI glob. Setting it also
+    /// hides the upstream's resource templates, since a template can reach URIs
+    /// the filter would refuse.
+    #[serde(default, skip_serializing_if = "ResourceFilter::is_empty")]
+    pub resources: ResourceFilter,
 }
 
 impl UpstreamConfig {
@@ -387,6 +399,79 @@ impl UpstreamConfig {
             Some(prefix) => format!("{prefix}{tool}"),
             None => tool.to_owned(),
         }
+    }
+}
+
+/// Renames and description overrides for an upstream's tools. Keys are the
+/// upstream's own tool names. A rename changes the name agents see, before the
+/// upstream prefix is added. Calls still reach the upstream's own name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolOverrides {
+    /// Upstream tool name to the exposed name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rename: BTreeMap<String, String>,
+    /// Upstream tool name to a replacement description.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub describe: BTreeMap<String, String>,
+}
+
+impl ToolOverrides {
+    /// Whether no override is configured.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rename.is_empty() && self.describe.is_empty()
+    }
+}
+
+/// Allow/deny globs and renames for an upstream's prompts. Matching works like
+/// the tool `allow`/`deny` lists, on the upstream's own prompt names.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromptFilter {
+    /// Prompt names to expose (globs allowed). Empty means all, subject to
+    /// `deny`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
+    /// Prompt names to hide (globs allowed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny: Vec<String>,
+    /// Upstream prompt name to the exposed name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rename: BTreeMap<String, String>,
+    /// Upstream prompt name to a replacement description.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub describe: BTreeMap<String, String>,
+}
+
+impl PromptFilter {
+    /// Whether no filter or override is configured.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.allow.is_empty()
+            && self.deny.is_empty()
+            && self.rename.is_empty()
+            && self.describe.is_empty()
+    }
+}
+
+/// Allow/deny URI globs for an upstream's resources.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceFilter {
+    /// URIs to expose (globs allowed). Empty means all, subject to `deny`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
+    /// URIs to hide (globs allowed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny: Vec<String>,
+}
+
+impl ResourceFilter {
+    /// Whether no filter is configured.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.allow.is_empty() && self.deny.is_empty()
     }
 }
 
