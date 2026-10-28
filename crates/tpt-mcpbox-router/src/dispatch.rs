@@ -537,7 +537,7 @@ impl Router {
             .ok_or_else(|| RouterError::UnknownTool(name.to_owned()))?;
 
         let _in_flight = self.lifecycle.begin()?;
-        let _permit = self.limiter.acquire(name, caller)?;
+        let _permit = self.limiter.acquire_queued(name, caller).await?;
 
         match &route.backend {
             Backend::Upstream { gate, tool_name } => {
@@ -795,6 +795,7 @@ mod tests {
                     requests_per_second: Some(1.0),
                     burst: Some(1),
                     max_concurrency: None,
+                    max_wait: None,
                 },
             )],
             Limits::default(),

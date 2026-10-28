@@ -9,8 +9,8 @@
 //! Admission is all-or-nothing; a call rejected by a later gate releases the
 //! permits taken from earlier ones when it returns.
 //!
-//! Overload is rejected immediately. A queue-and-wait policy is not implemented
-//! yet.
+//! Overload is rejected at once, unless the tool sets `queue_timeout`. Then a
+//! call waits up to that long for a free slot (see [`Limiter::acquire_queued`]).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -24,6 +24,9 @@ use tpt_mcpbox_config::model::RateLimit;
 /// memory use and nothing else.
 const CLIENT_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
+/// How often a queued call re-checks its gates while it waits for one.
+const QUEUE_POLL: Duration = Duration::from_millis(5);
+
 /// Rate and concurrency settings for one gate, in a form the limiter can use
 /// without depending on configuration types at every call site.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -34,6 +37,9 @@ pub struct Limits {
     pub burst: Option<u32>,
     /// Maximum calls in flight at once; `None` means unlimited.
     pub max_concurrency: Option<u32>,
+    /// How long a call waits for a busy gate before it is refused, when the
+    /// caller uses [`Limiter::acquire_queued`]. `None` refuses at once.
+    pub max_wait: Option<Duration>,
 }
 
 impl From<&RateLimit> for Limits {
@@ -42,6 +48,7 @@ impl From<&RateLimit> for Limits {
             requests_per_second: limit.requests_per_second,
             burst: limit.burst,
             max_concurrency: limit.max_concurrency,
+            max_wait: limit.queue_timeout,
         }
     }
 }
@@ -110,6 +117,35 @@ impl Limiter {
     /// Admits or rejects a call from `client` to `tool`, using the current time.
     pub fn acquire(&self, tool: &str, client: &str) -> Result<Permit, Rejection> {
         self.acquire_at(tool, client, Instant::now())
+    }
+
+    /// Like [`Limiter::acquire`], but when the tool sets `max_wait` a refused
+    /// call is retried every few milliseconds until it is admitted or the wait
+    /// runs out. The last refusal is returned in the second case. A tool
+    /// without `max_wait` refuses at once, as with `acquire`.
+    ///
+    /// Polling keeps one admission path for all four gates. Waiting on a
+    /// single semaphore would miss a rate refusal or a client's slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Rejection`] that was in force when the wait ran out.
+    pub async fn acquire_queued(&self, tool: &str, client: &str) -> Result<Permit, Rejection> {
+        let Some(max_wait) = self.tools.get(tool).and_then(|gate| gate.limits.max_wait) else {
+            return self.acquire(tool, client);
+        };
+        let deadline = Instant::now() + max_wait;
+        loop {
+            let rejection = match self.acquire(tool, client) {
+                Ok(permit) => return Ok(permit),
+                Err(rejection) => rejection,
+            };
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(rejection);
+            }
+            tokio::time::sleep(QUEUE_POLL.min(remaining)).await;
+        }
     }
 
     /// Like [`Limiter::acquire`], with the clock supplied by the caller.
@@ -290,6 +326,7 @@ mod tests {
             requests_per_second: rps,
             burst,
             max_concurrency: conc,
+            max_wait: None,
         }
     }
 
@@ -521,13 +558,69 @@ mod tests {
         assert_eq!(in_flight.load(Ordering::SeqCst), 0);
     }
 
+    fn queued(max_concurrency: u32, max_wait: Duration) -> Limits {
+        Limits {
+            max_concurrency: Some(max_concurrency),
+            max_wait: Some(max_wait),
+            ..Limits::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_call_is_admitted_when_a_slot_frees_within_the_wait() {
+        let limiter = Arc::new(Limiter::new(
+            [("t", queued(1, Duration::from_secs(2)))],
+            Limits::default(),
+        ));
+        let held = limiter.acquire("t", "c1").unwrap();
+        let waiter = {
+            let limiter = Arc::clone(&limiter);
+            tokio::spawn(async move { limiter.acquire_queued("t", "c2").await.map(|_| ()) })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(held);
+        assert!(waiter.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn queued_call_is_refused_with_the_last_rejection_when_the_wait_runs_out() {
+        let limiter = Limiter::new(
+            [("t", queued(1, Duration::from_millis(30)))],
+            Limits::default(),
+        );
+        let _held = limiter.acquire("t", "c1").unwrap();
+        let started = Instant::now();
+        assert_eq!(
+            limiter.acquire_queued("t", "c2").await.unwrap_err(),
+            Rejection::ToolConcurrency("t".into())
+        );
+        assert!(started.elapsed() >= Duration::from_millis(30));
+    }
+
+    #[tokio::test]
+    async fn tool_without_a_wait_refuses_at_once() {
+        let limiter = Limiter::new([("t", limits(None, None, Some(1)))], Limits::default());
+        let _held = limiter.acquire("t", "c1").unwrap();
+        assert_eq!(
+            limiter.acquire_queued("t", "c2").await.unwrap_err(),
+            Rejection::ToolConcurrency("t".into())
+        );
+    }
+
     #[test]
     fn rate_from_config_model() {
         let config = RateLimit {
             requests_per_second: Some(5.0),
             burst: Some(2),
             max_concurrency: Some(4),
+            queue_timeout: Some(Duration::from_millis(250)),
         };
-        assert_eq!(Limits::from(&config), limits(Some(5.0), Some(2), Some(4)));
+        assert_eq!(
+            Limits::from(&config),
+            Limits {
+                max_wait: Some(Duration::from_millis(250)),
+                ..limits(Some(5.0), Some(2), Some(4))
+            }
+        );
     }
 }
