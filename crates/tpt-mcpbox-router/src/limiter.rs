@@ -443,6 +443,85 @@ mod tests {
     }
 
     #[test]
+    fn many_distinct_idle_clients_do_not_grow_the_map_without_bound() {
+        let limiter = Limiter::new([], limits(Some(1.0), Some(1), None));
+        let t0 = Instant::now();
+        for n in 0..10_000 {
+            drop(limiter.acquire_at("a", &format!("c{n}"), t0).unwrap());
+        }
+        assert_eq!(limiter.client_count(), 10_000);
+
+        // One sweep later, every client has refilled and is idle, so only the
+        // caller that triggered the sweep remains.
+        let later = t0 + CLIENT_SWEEP_INTERVAL + Duration::from_secs(1);
+        drop(limiter.acquire_at("a", "fresh", later).unwrap());
+        assert_eq!(limiter.client_count(), 1);
+    }
+
+    #[test]
+    fn flood_of_client_rejections_leaks_no_tool_slots() {
+        // The tool gate admits before the client gate rejects, so every
+        // rejected call must give its tool slot back.
+        let limiter = Limiter::new(
+            [("t", limits(None, None, Some(2)))],
+            limits(None, None, Some(1)),
+        );
+        let held = limiter.acquire("t", "c1").unwrap();
+        for _ in 0..1_000 {
+            assert_eq!(
+                limiter.acquire("t", "c1").unwrap_err(),
+                Rejection::ClientConcurrency("c1".into())
+            );
+        }
+        // Only `held` occupies a tool slot, so exactly one is free for others.
+        let free = limiter.acquire("t", "c2").unwrap();
+        assert_eq!(
+            limiter.acquire("t", "c3").unwrap_err(),
+            Rejection::ToolConcurrency("t".into())
+        );
+        drop((held, free));
+    }
+
+    #[test]
+    fn concurrent_callers_never_exceed_the_tool_cap() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        const CAP: u32 = 3;
+        let limiter = Arc::new(Limiter::new(
+            [("t", limits(None, None, Some(CAP)))],
+            Limits::default(),
+        ));
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+
+        let workers: Vec<_> = (0..32)
+            .map(|n| {
+                let limiter = Arc::clone(&limiter);
+                let in_flight = Arc::clone(&in_flight);
+                let peak = Arc::clone(&peak);
+                std::thread::spawn(move || {
+                    for _ in 0..200 {
+                        if let Ok(permit) = limiter.acquire("t", &format!("c{n}")) {
+                            let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                            peak.fetch_max(now, Ordering::SeqCst);
+                            std::thread::yield_now();
+                            in_flight.fetch_sub(1, Ordering::SeqCst);
+                            drop(permit);
+                        }
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        assert!(peak.load(Ordering::SeqCst) <= CAP as usize);
+        assert_eq!(in_flight.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn rate_from_config_model() {
         let config = RateLimit {
             requests_per_second: Some(5.0),
