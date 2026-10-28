@@ -353,7 +353,13 @@ impl Engine {
         now: Instant,
     ) -> bool {
         let mut buckets = self.quotas.lock().unwrap_or_else(PoisonError::into_inner);
-        let bucket_key = (rule.id.clone(), caller.unwrap_or_default().to_owned());
+        // A shared budget ignores the caller, so a new session cannot reset it.
+        let owner = if quota.shared {
+            ""
+        } else {
+            caller.unwrap_or_default()
+        };
+        let bucket_key = (rule.id.clone(), owner.to_owned());
         if !buckets.contains_key(&bucket_key) && buckets.len() >= QUOTA_BUCKET_LIMIT {
             // Drop buckets with no admission left inside their window.
             buckets.retain(|_, bucket| bucket.is_live(now));

@@ -606,6 +606,11 @@ pub struct Quota {
     #[serde(with = "duration_required")]
     #[schemars(with = "String")]
     pub window: Duration,
+    /// One budget shared by every caller of the rule. By default each caller has
+    /// its own budget, so a client that starts a new session gets a fresh one
+    /// (SR-04). A shared budget cannot be reset that way.
+    #[serde(default)]
+    pub shared: bool,
 }
 
 /// Policy evaluation configuration.

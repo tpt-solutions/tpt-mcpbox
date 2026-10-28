@@ -614,13 +614,20 @@ fn validate_policy(config: &Config, mode: ValidationMode, report: &mut Validatio
                 "rule ids are recorded in audit entries and must be unique",
             ));
         }
-        // The router does not yet give the policy a call's host or path, so a
-        // deny rule on them never matches (SR-01). Say so rather than let an
-        // operator rely on it.
-        if rule.effect == Effect::Deny && (!rule.hosts.is_empty() || !rule.paths.is_empty()) {
+        // The policy is not given a call's filesystem path, so a deny rule on
+        // `paths` never matches (SR-01). Say so rather than let an operator rely
+        // on it. `hosts` on a deny rule is checked only on the outbound requests
+        // of Wasm tools, not on upstream calls.
+        if rule.effect == Effect::Deny && !rule.paths.is_empty() {
             report.diagnostics.push(Diagnostic::warning(
                 &path,
-                "`hosts` and `paths` on a deny rule are not enforced yet; the policy is not given the call's host or path",
+                "`paths` on a deny rule is not enforced yet; the policy is not given the call's path",
+            ));
+        }
+        if rule.effect == Effect::Deny && !rule.hosts.is_empty() {
+            report.diagnostics.push(Diagnostic::warning(
+                &path,
+                "`hosts` on a deny rule applies only to outbound requests of Wasm tools; upstream calls are not host-checked",
             ));
         }
         if let Some(constraints) = &rule.constraints {
@@ -895,7 +902,7 @@ policy:
     }
 
     #[test]
-    fn deny_rules_on_hosts_or_paths_draw_a_warning() {
+    fn deny_rules_on_paths_draw_a_warning() {
         let config = parse(
             "policy:
   rules:
@@ -908,6 +915,22 @@ policy:
         let warnings = report.of_severity(Severity::Warning);
         assert_eq!(warnings.len(), 1, "{report}");
         assert_eq!(warnings[0].path, "policy.rules[0]");
+    }
+
+    #[test]
+    fn deny_rules_on_hosts_say_where_they_apply() {
+        let config = parse(
+            "policy:
+  rules:
+    - id: deny-evil
+      effect: deny
+      hosts: [\"*.evil.test\"]
+",
+        );
+        let report = validate(&config, ValidationMode::Serve);
+        let warnings = report.of_severity(Severity::Warning);
+        assert_eq!(warnings.len(), 1, "{report}");
+        assert!(warnings[0].message.contains("Wasm tools"));
     }
 
     #[test]

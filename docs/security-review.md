@@ -30,10 +30,10 @@ accuracy.
 
 | ID | Finding | Severity | Status |
 |----|---------|----------|--------|
-| SR-01 | `hosts` and `paths` policy rules never fire: no caller fills in `host` or `fs_path` | Critical | Open (validation warns) |
+| SR-01 | `hosts` and `paths` policy rules never fire: no caller fills in `host` or `fs_path` | Critical | Partly fixed (`hosts` on Wasm outbound requests; `paths` open) |
 | SR-02 | A host or path that fails normalisation skipped deny rules | High | Fixed |
 | SR-03 | Upstream tools are checked under their upstream name, not the exposed name | High | Fixed |
-| SR-04 | Quotas are per session id, and a new session gets a new budget | High | Open |
+| SR-04 | Quotas are per session id, and a new session gets a new budget | High | Partly fixed (`shared` quota, opt-in) |
 | SR-05 | Time limit and cancellation do not apply while a guest is blocked in a host call | High | Partly fixed (outbound timeouts) |
 | SR-06 | Rego saw un-normalised hosts, paths and URIs | Medium | Fixed |
 | SR-07 | A relative `policy.rego` was resolved against the working directory | Medium | Fixed |
@@ -75,10 +75,16 @@ defence.
 (from the tool's declared argument schema, or from the host call at the point
 it is made). Not a small change.
 
-**Interim (done):** config validation warns on any deny rule that sets `hosts`
-or `paths`, and the policy guide says so. The warning is test
-`deny_rules_on_hosts_or_paths_draw_a_warning`. The finding stays open until the
-policy is given the call's host or path.
+**Partly fixed:** a deny rule that names `hosts` is checked on each outbound
+request of a Wasm tool. `Policy::outbound_denial` consults only DSL deny rules:
+allow rules, Rego and `policy.default` do not refuse an outbound request, since
+the call was admitted and the sandbox's host allowlist governs outbound access.
+Dry-run never refuses. Upstream calls are not host-checked, and `paths` is still
+not given to the policy. Validation warns about both. Tests:
+`outbound_deny_rules_refuse_only_the_hosts_they_name`,
+`outbound_check_refuses_only_the_hosts_a_deny_rule_names`, and
+`deny_rules_on_hosts_say_where_they_apply`. The finding stays open for `paths`
+and for upstream routes.
 
 ### SR-02: unnormalisable host or path skipped deny rules (high, fixed)
 
@@ -110,8 +116,10 @@ The caller is the session id, a random UUID per `initialize`. A client that
 re-initialises gets a fresh quota bucket, and a `caller: "agent-*"` glob, as in
 the policy guide, can never match.
 
-**Fix:** key quotas on an authenticated principal, or offer a global bucket per
-rule. Design change.
+**Partly fixed:** a quota can set `shared: true`, which gives the rule one budget
+for every caller, so a new session cannot reset it (`a_shared_quota_is_one_budget_for_every_caller`).
+Per-caller budgets remain the default, since they are what a caller-scoped rule
+expects. Keying quotas on an authenticated principal is still open.
 
 ### SR-05: time limit does not cover host calls (high, open)
 

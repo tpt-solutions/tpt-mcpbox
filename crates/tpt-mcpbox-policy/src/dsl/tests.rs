@@ -436,11 +436,36 @@ fn with_uris(mut input: PolicyInput, uris: &[&str]) -> PolicyInput {
     input
 }
 
+#[test]
+fn a_shared_quota_is_one_budget_for_every_caller() {
+    let mut rule = quota_rule("shared", 1, Duration::from_secs(60));
+    rule.constraints
+        .as_mut()
+        .and_then(|c| c.quota.as_mut())
+        .expect("quota set")
+        .shared = true;
+    let engine = engine(vec![rule]);
+
+    let from = |caller: &str| PolicyInput {
+        method: "tools/call".to_owned(),
+        caller: Some(caller.to_owned()),
+        tool: Some("search".to_owned()),
+        ..PolicyInput::default()
+    };
+    assert!(engine.evaluate(&from("session-1")).is_allowed());
+    // A new session does not get a fresh budget.
+    assert!(!engine.evaluate(&from("session-2")).is_allowed());
+}
+
 fn quota_rule(id: &str, max_calls: u32, window: Duration) -> Rule {
     let mut allow = rule(id, Effect::Allow);
     allow.tool = Some("search".to_owned());
     allow.constraints = Some(RuleConstraints {
-        quota: Some(Quota { max_calls, window }),
+        quota: Some(Quota {
+            max_calls,
+            window,
+            shared: false,
+        }),
         ..RuleConstraints::default()
     });
     allow

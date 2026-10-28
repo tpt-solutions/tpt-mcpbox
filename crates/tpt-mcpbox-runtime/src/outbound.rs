@@ -52,6 +52,10 @@ pub(crate) struct HttpPolicy {
     max_request_bytes: u64,
 }
 
+/// Per-call check run on each outbound request's normalised host, after the
+/// tool's own allowlist. `Err` carries the reason the request is refused.
+pub type HostCheck = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
 /// A secret header and the hosts it may be sent to.
 #[derive(Debug)]
 struct Injected {
@@ -276,6 +280,8 @@ pub(crate) struct PolicyHooks {
     /// When the current call must end. Set by the runtime for each call, so an
     /// outbound request cannot outlive the call that made it (SR-05).
     pub(crate) deadline: Option<Instant>,
+    /// Policy check for the current call, if the caller supplied one.
+    pub(crate) check: Option<HostCheck>,
 }
 
 impl PolicyHooks {
@@ -283,6 +289,7 @@ impl PolicyHooks {
         Self {
             policy,
             deadline: None,
+            check: None,
         }
     }
 }
@@ -309,6 +316,12 @@ impl WasiHttpHooks for PolicyHooks {
             return Box::new(async move { Err(policy.error(&refusal)) });
         }
         let uri = request.uri().clone();
+        if let Some(check) = &self.check
+            && let Some(host) = uri.host().and_then(normalize_host)
+            && let Err(reason) = check(&host)
+        {
+            return Box::new(async move { Err(policy.error(&Refusal::Denied(reason))) });
+        }
         let options = policy.prepare(
             &uri,
             request.headers_mut(),

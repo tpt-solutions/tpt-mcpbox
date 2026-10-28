@@ -94,6 +94,23 @@ impl Policy {
         self.evaluate_at(input, Instant::now(), true)
     }
 
+    /// The id of an explicit DSL deny rule that refuses an outbound request a
+    /// call has already been admitted for, or `None` when the request may go.
+    ///
+    /// Only DSL deny rules count. Allow rules, Rego and `policy.default` do not
+    /// apply here: the call was admitted when it was made, and the sandbox's
+    /// host allowlist governs outbound access. Dry-run never refuses.
+    #[must_use]
+    pub fn outbound_denial(&self, input: &PolicyInput) -> Option<String> {
+        if self.dry_run {
+            return None;
+        }
+        match self.dsl.outcome(input, Instant::now(), false) {
+            DslOutcome::Matched(verdict) if verdict.effect == Effect::Deny => Some(verdict.rule_id),
+            _ => None,
+        }
+    }
+
     /// Like [`Policy::evaluate`], but a quota is not spent. Use it to re-check a
     /// request that an earlier `evaluate` already admitted, such as each
     /// outbound network request of a tool call, so that one call is counted

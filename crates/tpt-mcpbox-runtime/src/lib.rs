@@ -30,6 +30,7 @@ mod sandbox;
 mod tool;
 
 pub use error::ToolError;
+pub use outbound::HostCheck;
 pub use runtime::{CancelToken, Runtime};
 pub use tool::{
     DEFAULT_MAX_CONCURRENT, DEFAULT_MEMORY_BYTES, DEFAULT_PAYLOAD_BYTES, DEFAULT_RECYCLE_AFTER,

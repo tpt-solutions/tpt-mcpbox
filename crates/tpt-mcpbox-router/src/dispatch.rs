@@ -27,7 +27,7 @@ use tpt_mcpbox_protocol::prompts::Prompt;
 use tpt_mcpbox_protocol::resources::Resource;
 use tpt_mcpbox_protocol::tools::{CallToolResult, Tool};
 use tpt_mcpbox_proxy::{PolicyGate, ProxyError, UpstreamError};
-use tpt_mcpbox_runtime::{CancelToken, LoadedTool, ToolError};
+use tpt_mcpbox_runtime::{CancelToken, HostCheck, LoadedTool, ToolError};
 use tracing::Instrument as _;
 
 use crate::lifecycle::{Lifecycle, ShuttingDown};
@@ -569,18 +569,47 @@ impl Router {
                     });
                 }
 
+                let check = outbound_check(
+                    Arc::clone(&self.policy),
+                    caller,
+                    tool_name,
+                    input.arguments.clone(),
+                );
                 let args_json =
                     serde_json::to_string(&Value::Object(arguments.unwrap_or_default()))?;
                 let tool = Arc::clone(tool);
                 let tool_name = tool_name.clone();
-                let output =
-                    tokio::task::spawn_blocking(move || tool.call(&tool_name, &args_json, &cancel))
-                        .await
-                        .map_err(|e| RouterError::TaskJoin(e.to_string()))?;
+                let output = tokio::task::spawn_blocking(move || {
+                    tool.call_checked(&tool_name, &args_json, &cancel, Some(check))
+                })
+                .await
+                .map_err(|e| RouterError::TaskJoin(e.to_string()))?;
                 Ok(ToolOutput::Wasm(output?))
             }
         }
     }
+}
+
+/// The check the runtime runs on each outbound request of a Wasm tool call.
+/// It refuses a request only when an explicit DSL deny rule names the host; see
+/// [`Policy::outbound_denial`].
+fn outbound_check(policy: Arc<Policy>, caller: &str, tool: &str, arguments: Value) -> HostCheck {
+    let caller = caller.to_owned();
+    let tool = tool.to_owned();
+    Arc::new(move |host: &str| {
+        let input = PolicyInput {
+            method: "tools/call".to_owned(),
+            caller: Some(caller.clone()),
+            tool: Some(tool.clone()),
+            arguments: arguments.clone(),
+            host: Some(host.to_owned()),
+            ..PolicyInput::default()
+        };
+        match policy.outbound_denial(&input) {
+            Some(rule_id) => Err(format!("refused by policy rule `{rule_id}`")),
+            None => Ok(()),
+        }
+    })
 }
 
 #[cfg(test)]
@@ -730,6 +759,21 @@ mod tests {
             Err(RouterError::Denied { .. }) => {}
             other => panic!("expected denial for the unlisted upstream, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn outbound_check_refuses_only_the_hosts_a_deny_rule_names() {
+        let mut deny = allow("fetch");
+        deny.id = "deny-evil".to_owned();
+        deny.effect = Effect::Deny;
+        deny.hosts = vec!["*.evil.test".to_owned()];
+        let check = outbound_check(policy(vec![deny]), "agent", "fetch", Value::Null);
+
+        assert_eq!(
+            check("x.evil.test").unwrap_err(),
+            "refused by policy rule `deny-evil`"
+        );
+        assert!(check("api.github.com").is_ok());
     }
 
     #[tokio::test]

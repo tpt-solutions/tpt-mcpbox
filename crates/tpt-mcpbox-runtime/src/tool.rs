@@ -22,7 +22,7 @@ use wasmtime_wasi_http::WasiHttpCtx;
 use crate::bindings::Tool as Bindings;
 use crate::error::ToolError;
 use crate::module;
-use crate::outbound::{HttpPolicy, PolicyHooks};
+use crate::outbound::{HostCheck, HttpPolicy, PolicyHooks};
 use crate::runtime::{CallControl, CancelToken, HostState, Runtime};
 use crate::sandbox::{self, WasiPlan};
 
@@ -105,6 +105,23 @@ impl LoadedTool {
         arguments: &str,
         cancel: &CancelToken,
     ) -> Result<String, ToolError> {
+        self.call_checked(tool, arguments, cancel, None)
+    }
+
+    /// Like [`LoadedTool::call`], with a check on every outbound request the
+    /// call makes. A request the check refuses fails inside the guest, as an
+    /// `wasi:http` error, and the call goes on.
+    ///
+    /// # Errors
+    ///
+    /// As [`LoadedTool::call`].
+    pub fn call_checked(
+        &self,
+        tool: &str,
+        arguments: &str,
+        cancel: &CancelToken,
+        check: Option<HostCheck>,
+    ) -> Result<String, ToolError> {
         if arguments.len() > self.max_argument_bytes {
             return Err(ToolError::ArgumentsTooLarge {
                 tool: self.name.clone(),
@@ -112,7 +129,7 @@ impl LoadedTool {
                 limit: self.max_argument_bytes,
             });
         }
-        let outcome = self.run(cancel, |store, bindings| {
+        let outcome = self.run(cancel, check, |store, bindings| {
             bindings.call_call(store, tool, arguments)
         })?;
         match outcome {
@@ -133,6 +150,7 @@ impl LoadedTool {
     fn run<R>(
         &self,
         cancel: &CancelToken,
+        check: Option<HostCheck>,
         op: impl FnOnce(&mut Store<HostState>, &Bindings) -> wasmtime::Result<R>,
     ) -> Result<R, ToolError> {
         let mut lease = self.pool.checkout()?;
@@ -143,6 +161,7 @@ impl LoadedTool {
         let slot = lease.slot_mut();
         slot.store.data_mut().control = Arc::clone(&control);
         slot.store.data_mut().hooks.deadline = Some(control.deadline);
+        slot.store.data_mut().hooks.check = check;
         slot.store.set_epoch_deadline(1);
 
         let outcome = catch_unwind(AssertUnwindSafe(|| op(&mut slot.store, &slot.bindings)));
@@ -375,7 +394,7 @@ impl Runtime {
                 }),
             pool,
         };
-        tool.descriptors = tool.run(&CancelToken::new(), |store, bindings| {
+        tool.descriptors = tool.run(&CancelToken::new(), None, |store, bindings| {
             bindings.call_describe(store)
         })?;
         Ok(tool)

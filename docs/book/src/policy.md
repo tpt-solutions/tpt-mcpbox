@@ -53,9 +53,13 @@ Matching rules:
 
 - `tool`, `prompt`, `method`, `caller`: exact or glob. A `prompt` rule never
   matches a tool call, and a `tool` rule never matches a prompt.
-- `hosts` and `paths` on a deny rule are not enforced yet: the policy is not
-  given the host or path of a call, so such a rule never matches. The loader
-  warns about it. See the security review, SR-01.
+- `hosts` on a deny rule is checked on each outbound request a Wasm tool makes,
+  and refuses that request when the rule names its host. Upstream calls are not
+  host-checked. Allow rules with `hosts` never match, since a call has no host
+  when it is admitted.
+- `paths` on a deny rule is not enforced yet: the policy is not given the path
+  of a call, so such a rule never matches. The loader warns about it. See the
+  security review, SR-01.
 - `hosts`: glob, case-insensitive, after normalisation. Look-alike Unicode
   hosts are normalised before matching.
 - `paths`: glob, applied to the normalised path. Traversal such as `..` does not
@@ -65,6 +69,10 @@ Matching rules:
 
 Constraints on an allow apply to the call: `quota` (sliding window), and the
 memory and time limits. When several rules allow a call, the tightest limits win.
+
+A quota has one budget per caller by default. Set `shared: true` for one budget
+that every caller of the rule draws on. A client that starts a new session gets
+a fresh per-caller budget, so use `shared` for a limit that must hold.
 
 ## Rego
 

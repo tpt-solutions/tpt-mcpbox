@@ -55,6 +55,51 @@ fn rule(id: &str, effect: Effect) -> Rule {
     }
 }
 
+#[test]
+fn outbound_deny_rules_refuse_only_the_hosts_they_name() {
+    let mut deny = rule("deny-evil", Effect::Deny);
+    deny.hosts = vec!["*.evil.test".to_owned()];
+    let mut allow = tool_rule("allow-tool", Effect::Allow, "fetch");
+    allow.hosts = Vec::new();
+    let policy = Policy::from_config(&PolicyConfig {
+        rules: vec![deny, allow],
+        ..PolicyConfig::default()
+    })
+    .expect("compiles");
+
+    let outbound = |host: &str| PolicyInput {
+        method: "tools/call".to_owned(),
+        tool: Some("fetch".to_owned()),
+        host: Some(host.to_owned()),
+        ..PolicyInput::default()
+    };
+    assert_eq!(
+        policy.outbound_denial(&outbound("x.evil.test")).as_deref(),
+        Some("deny-evil")
+    );
+    // No rule names this host, so the default does not refuse it.
+    assert_eq!(policy.outbound_denial(&outbound("api.github.com")), None);
+}
+
+#[test]
+fn outbound_denial_is_silent_in_dry_run() {
+    let mut deny = rule("deny-evil", Effect::Deny);
+    deny.hosts = vec!["*.evil.test".to_owned()];
+    let policy = Policy::from_config(&PolicyConfig {
+        rules: vec![deny],
+        dry_run: true,
+        ..PolicyConfig::default()
+    })
+    .expect("compiles");
+    let input = PolicyInput {
+        method: "tools/call".to_owned(),
+        tool: Some("fetch".to_owned()),
+        host: Some("x.evil.test".to_owned()),
+        ..PolicyInput::default()
+    };
+    assert_eq!(policy.outbound_denial(&input), None);
+}
+
 fn tool_rule(id: &str, effect: Effect, tool: &str) -> Rule {
     let mut r = rule(id, effect);
     r.tool = Some(tool.to_owned());
@@ -318,6 +363,7 @@ fn reload_keeps_quota_counters_for_surviving_rules() {
         quota: Some(Quota {
             max_calls: 1,
             window: Duration::from_secs(3600),
+            shared: false,
         }),
         ..RuleConstraints::default()
     });
@@ -343,6 +389,7 @@ fn reload_drops_counters_of_removed_rules() {
         quota: Some(Quota {
             max_calls: 1,
             window: Duration::from_secs(3600),
+            shared: false,
         }),
         ..RuleConstraints::default()
     });
