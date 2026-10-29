@@ -13,6 +13,8 @@ target/
 # Wasm build output
 *.wasm
 !tests/**/fixtures/*.wasm
+# The self-test probe is committed; its digest is pinned in probe.sha256.
+!crates/tpt-mcpbox-runtime/assets/probe.wasm
 
 # OCI / tool cache
 /.mcpbox/

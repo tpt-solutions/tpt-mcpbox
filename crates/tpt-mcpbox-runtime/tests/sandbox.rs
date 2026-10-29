@@ -440,6 +440,44 @@ fn concurrency_cap_is_enforced() {
 }
 
 #[test]
+fn a_flood_of_calls_is_refused_cleanly_and_the_pool_recovers() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut cfg = config("fixture");
+    cfg.limits.max_concurrent_calls = Some(4);
+    let tool = Arc::new(load(&cfg, dir.path()));
+
+    // Each call echoes its own number, so a result that came back for another
+    // call would show up as a mismatch.
+    let threads: Vec<_> = (0..64)
+        .map(|n| {
+            let tool = Arc::clone(&tool);
+            std::thread::spawn(move || (n, call(&tool, "echo", &n.to_string())))
+        })
+        .collect();
+
+    let (mut served, mut refused) = (0, 0);
+    for thread in threads {
+        let (n, outcome) = thread.join().expect("caller finishes");
+        match outcome {
+            Ok(text) => {
+                assert_eq!(text, n.to_string(), "a reply went to the wrong call");
+                served += 1;
+            }
+            Err(ToolError::Overloaded { limit: 4, .. }) => refused += 1,
+            Err(other) => panic!("unexpected error under load: {other:?}"),
+        }
+    }
+    assert_eq!(served + refused, 64);
+    assert!(served >= 1, "some calls are served");
+
+    // Nothing is left leased, and the pool serves again.
+    let usage = tool.pool_usage();
+    assert_eq!(usage.leased, 0);
+    assert!(usage.capacity <= 4, "the pool stays within its cap");
+    assert_eq!(call(&tool, "echo", "after").expect("pool recovers"), "after");
+}
+
+#[test]
 fn oversized_arguments_are_refused_before_the_guest_runs() {
     let dir = tempfile::tempdir().expect("temp dir");
     let mut cfg = config("fixture");
