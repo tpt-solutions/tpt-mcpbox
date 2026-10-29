@@ -53,6 +53,10 @@ impl RegoEngine {
     /// Compile a module from source. `name` is used only in diagnostics.
     pub(crate) fn from_source(name: &str, source: String) -> Result<Self, PolicyError> {
         let mut engine = regorus::Engine::new();
+        register_normalisers(&mut engine).map_err(|error| PolicyError::RegoCompile {
+            module: name.to_owned(),
+            message: error.to_string(),
+        })?;
         engine
             .add_policy(name.to_owned(), source)
             .map_err(|error| PolicyError::RegoCompile {
@@ -79,6 +83,57 @@ impl RegoEngine {
             .eval_bool_query(ALLOW_QUERY.to_owned(), false)
             .map_err(|error| error.to_string())
     }
+}
+
+/// Registers the builtins a module can call to normalise a raw value the way
+/// the DSL normalises fields: `tpt.normalize_host`, `tpt.normalize_path` and
+/// `tpt.normalize_uri`. Arguments are untrusted, so a module that compares one
+/// should normalise it first.
+///
+/// A value that cannot be normalised is undefined rather than an error, so an
+/// expression comparing it is false and an allow rule built on it does not
+/// fire. Refusals stay fail-closed.
+fn register_normalisers(engine: &mut regorus::Engine) -> anyhow::Result<()> {
+    engine.add_extension(
+        "tpt.normalize_host".to_owned(),
+        1,
+        Box::new(
+            |args: Vec<regorus::Value>| -> anyhow::Result<regorus::Value> {
+                Ok(normalise_argument(&args, normalize_host))
+            },
+        ),
+    )?;
+    engine.add_extension(
+        "tpt.normalize_path".to_owned(),
+        1,
+        Box::new(
+            |args: Vec<regorus::Value>| -> anyhow::Result<regorus::Value> {
+                Ok(normalise_argument(&args, normalize_path))
+            },
+        ),
+    )?;
+    engine.add_extension(
+        "tpt.normalize_uri".to_owned(),
+        1,
+        Box::new(
+            |args: Vec<regorus::Value>| -> anyhow::Result<regorus::Value> {
+                Ok(normalise_argument(&args, normalize_uri))
+            },
+        ),
+    )?;
+    Ok(())
+}
+
+/// The normalised first argument, or undefined when it is not a string or
+/// cannot be normalised.
+fn normalise_argument(
+    args: &[regorus::Value],
+    normalise: fn(&str) -> Option<String>,
+) -> regorus::Value {
+    args.first()
+        .and_then(|arg| arg.as_string().ok())
+        .and_then(|text| normalise(text))
+        .map_or(regorus::Value::Undefined, regorus::Value::from)
 }
 
 /// The input with its host, path and URIs normalised as the DSL sees them.

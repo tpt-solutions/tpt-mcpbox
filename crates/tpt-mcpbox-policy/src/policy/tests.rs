@@ -28,6 +28,20 @@ package tpt.mcpbox
 default allow := true
 "#;
 
+/// Module that normalises the raw path argument itself, the way a rule must
+/// before it compares a path.
+const NORMALISING: &str = r#"
+package tpt.mcpbox
+
+default allow := false
+
+allow if {
+    input.method == "tools/call"
+    input.tool == "read_file"
+    tpt.normalize_path(input.arguments.path) == "/srv/workspace/notes.txt"
+}
+"#;
+
 /// Module with no default, so `allow` is undefined for most inputs. Undefined
 /// must count as a refusal.
 const NO_DEFAULT: &str = r#"
@@ -53,6 +67,33 @@ fn rule(id: &str, effect: Effect) -> Rule {
         uris: Vec::new(),
         constraints: None,
     }
+}
+
+#[test]
+fn rego_rules_can_normalise_raw_arguments() {
+    let policy =
+        Policy::from_config_with_rego(&dsl_only(Vec::new()), "normalising.rego", NORMALISING)
+            .expect("compiles");
+    let read = |path: &str| PolicyInput {
+        method: "tools/call".to_owned(),
+        tool: Some("read_file".to_owned()),
+        arguments: json!({ "path": path }),
+        ..PolicyInput::default()
+    };
+    // Spellings that resolve to the allowed file are allowed.
+    assert!(
+        policy
+            .evaluate(&read("/srv/workspace/./notes.txt"))
+            .is_allowed()
+    );
+    assert!(
+        policy
+            .evaluate(&read("/srv/workspace/sub/../notes.txt"))
+            .is_allowed()
+    );
+    // Another file, and an escape above the root, are not.
+    assert!(!policy.evaluate(&read("/etc/passwd")).is_allowed());
+    assert!(!policy.evaluate(&read("/srv/../../etc/passwd")).is_allowed());
 }
 
 #[test]

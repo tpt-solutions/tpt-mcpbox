@@ -2607,6 +2607,7 @@ dependencies = [
 name = "tpt-mcpbox-policy"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "globset",
  "regorus",
  "serde",

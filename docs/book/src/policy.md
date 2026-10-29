@@ -99,6 +99,22 @@ request whose host, path or URI cannot be normalised is refused before the
 module runs. A relative `policy.rego` path is resolved against the directory of
 the configuration file.
 
+Arguments are raw, so a rule that compares one normalises it first with a
+builtin: `tpt.normalize_host(x)`, `tpt.normalize_path(x)` or `tpt.normalize_uri(x)`.
+A value that cannot be normalised is undefined, so `==` on it is false and an
+allow built on it does not fire. For example:
+
+```rego
+package tpt.mcpbox
+
+default allow := false
+
+allow if {
+    input.tool == "read_file"
+    tpt.normalize_path(input.arguments.path) == "/srv/workspace/notes.txt"
+}
+```
+
 A DSL deny always wins over Rego. An error in the module, or an undefined
 `allow`, counts as a refusal. Rego is not only a filter, though: when no DSL
 rule matches, a Rego allow admits the call even with `default: deny`.
