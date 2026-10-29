@@ -47,8 +47,8 @@ fixes are in progress. See [todo.md](todo.md) for the full checklist.
 |---|---|---|
 | 0 | Bootstrap & governance | done |
 | 1 | MCP protocol core (`tpt-mcpbox-protocol`) | done |
-| 2 | Configuration & secrets (`tpt-mcpbox-config`) | largely done; hot reload open |
-| 3 | Policy engine (`tpt-mcpbox-policy`) | largely done; reload wiring open |
+| 2 | Configuration & secrets (`tpt-mcpbox-config`) | largely done; reload of tools and upstreams open |
+| 3 | Policy engine (`tpt-mcpbox-policy`) | largely done; policy edits apply to a running hub |
 | 4 | Wasm runtime (`tpt-mcpbox-runtime`) | largely done; OCI module pull open |
 | 5 | Router & rate limiter (`tpt-mcpbox-router`) | largely done |
 | 6 | Passthrough proxy (`tpt-mcpbox-proxy`) | largely done |
