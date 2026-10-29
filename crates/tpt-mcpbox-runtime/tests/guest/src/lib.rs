@@ -11,6 +11,16 @@ wit_bindgen::generate!({
 
 struct Fixture;
 
+/// Non-tail recursion that keeps a stack frame per level, so a deep enough
+/// request exhausts the guest's stack.
+fn recurse(depth: u64) -> u64 {
+    if depth == 0 {
+        return 0;
+    }
+    let frame = [std::hint::black_box(depth as u8); 64];
+    1 + recurse(std::hint::black_box(depth - 1)) + u64::from(frame[0] & 0)
+}
+
 const DESCRIPTORS: &str = r#"[
   {"name": "echo", "description": "returns its arguments", "input_schema": {"type": "object"}},
   {"name": "read-file", "description": "reads a file path", "input_schema": {"type": "object"}},
@@ -20,6 +30,7 @@ const DESCRIPTORS: &str = r#"[
   {"name": "probe", "description": "reports what the sandbox exposes", "input_schema": {"type": "object"}},
   {"name": "spin", "description": "never returns", "input_schema": {"type": "object"}},
   {"name": "grow", "description": "allocates memory", "input_schema": {"type": "object"}},
+  {"name": "recurse", "description": "recurses to the depth in its arguments", "input_schema": {"type": "object"}},
   {"name": "panic", "description": "panics", "input_schema": {"type": "object"}},
   {"name": "fail", "description": "returns a tool error", "input_schema": {"type": "object"}},
   {"name": "panic-echo", "description": "panics with its arguments in the message", "input_schema": {"type": "object"}}
@@ -101,6 +112,10 @@ impl Guest for Fixture {
                     buffer.extend(std::iter::repeat_n(1u8, 1 << 20));
                 }
                 Ok(format!("{}", buffer.len()))
+            }
+            "recurse" => {
+                let depth = arguments.trim().parse::<u64>().unwrap_or(0);
+                Ok(recurse(depth).to_string())
             }
             "panic" => panic!("fixture panic on request"),
             "panic-echo" => panic!("fixture panic with {arguments}"),

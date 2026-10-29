@@ -440,6 +440,27 @@ fn concurrency_cap_is_enforced() {
 }
 
 #[test]
+fn deep_recursion_traps_inside_the_guest_and_the_runtime_keeps_serving() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let tool = load(&config("fixture"), dir.path());
+    assert_eq!(
+        call(&tool, "recurse", "100").expect("shallow recursion"),
+        "100"
+    );
+
+    // Far past the guest's stack: a trap, reported as an error, not a crash.
+    let deep = call(&tool, "recurse", "100000000");
+    assert!(
+        deep.is_err(),
+        "a stack overflow must be an error, got {deep:?}"
+    );
+    assert_eq!(
+        call(&tool, "echo", "still up").expect("runtime serves"),
+        "still up"
+    );
+}
+
+#[test]
 fn a_flood_of_calls_is_refused_cleanly_and_the_pool_recovers() {
     let dir = tempfile::tempdir().expect("temp dir");
     let mut cfg = config("fixture");
