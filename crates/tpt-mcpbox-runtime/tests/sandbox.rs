@@ -474,7 +474,10 @@ fn a_flood_of_calls_is_refused_cleanly_and_the_pool_recovers() {
     let usage = tool.pool_usage();
     assert_eq!(usage.leased, 0);
     assert!(usage.capacity <= 4, "the pool stays within its cap");
-    assert_eq!(call(&tool, "echo", "after").expect("pool recovers"), "after");
+    assert_eq!(
+        call(&tool, "echo", "after").expect("pool recovers"),
+        "after"
+    );
 }
 
 #[test]
