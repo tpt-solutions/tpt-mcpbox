@@ -55,7 +55,7 @@ accuracy.
 | SR-23 | The local overlay can add an HTTP listener | Low | Fixed |
 | SR-24 | The audit hash chain is unkeyed: anyone who can write the file can rebuild it | Info | Fixed (opt-in: `audit.key_env`) |
 | SR-25 | Prompt names are not part of the policy input | Info | Fixed |
-| SR-26 | Upstream secret headers are not marked sensitive; secret copies are not zeroised | Info | Partly fixed (marking done) |
+| SR-26 | Upstream secret headers are not marked sensitive; secret copies are not zeroised | Info | Partly fixed; zeroising accepted as residual |
 | SR-27 | Non-goals, transports, bearer check, body cap, origin check, audit-before-dispatch | — | Hold |
 
 ## Findings
@@ -305,8 +305,12 @@ loopback. **Fixed** in `protocol/src/transport/http.rs`, with cases in
 - **SR-25 (fixed):** `prompts/get` had no name in the policy input, so a rule
   could not allow one prompt and not another. `PolicyInput` and `Rule` now carry
   `prompt`, and `prompts/get` sets it. Test: `prompt_rules_match_the_prompt_name_and_never_a_tool_name`.
-- **SR-26:** secret headers sent to HTTP upstreams are not marked sensitive,
-  and `headers_for` returns plain `String` copies that are not zeroised.
+- **SR-26 (partly fixed):** secret headers sent to HTTP upstreams are now marked
+  sensitive, so hyper keeps them out of debug output. Zeroising is **accepted as a
+  residual**: `headers_for` returns plain `String` copies, and the HTTP client
+  converts them into `HeaderValue`s whose bytes hyper keeps. Clearing the
+  `String`s would not clear those copies, so a complete fix needs a different
+  client, not a change here.
 
 ### SR-27: claims that hold
 
