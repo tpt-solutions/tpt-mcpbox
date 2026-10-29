@@ -158,7 +158,9 @@ audit:
 Set `key_env` to the name of a secret, in the environment or the `.env` file. The
 chain is then keyed, and `tpt-mcpbox audit verify --config` needs the same secret.
 Without a key, anyone who can write the log can rebuild its whole chain, and the
-loader warns. A log written with a key cannot be opened without it, and the
+loader warns. With a key, each append also writes `<log>.head`, a MAC-protected
+record of the last entry, so removing the newest entries is detected too. Deleting
+the log and its checkpoint together, or restoring an older pair, is not. A log written with a key cannot be opened without it, and the
 reverse holds too.
 
 `max_segment_bytes` (default 64 MB) rolls the log into numbered segments,

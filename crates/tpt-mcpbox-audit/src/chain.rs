@@ -339,9 +339,107 @@ impl AuditLog {
         }
 
         head.next_seq += 1;
-        head.prev = hash;
+        head.prev = hash.clone();
+        if let Some(key) = head.key.as_deref() {
+            write_checkpoint(&self.path, key, entry.seq, &hash)?;
+        }
         Ok(entry)
     }
+}
+
+/// The keyed head checkpoint: `<log>.head`, holding the last entry's sequence
+/// number and hash under a MAC. Without it, removing the newest entries leaves a
+/// valid shorter chain, which is the limit recorded in R9.
+fn checkpoint_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".head");
+    PathBuf::from(name)
+}
+
+fn checkpoint_mac(key: &[u8], seq: u64, hash: &str) -> HmacSha256 {
+    // HMAC accepts a key of any length, so this cannot fail.
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC takes any key length");
+    mac.update(format!("{seq}:{hash}").as_bytes());
+    mac
+}
+
+/// Replaces the checkpoint with one for entry `seq`, whose hash is `hash`. The
+/// new file is written and synced before it is renamed over the old one.
+fn write_checkpoint(path: &Path, key: &[u8], seq: u64, hash: &str) -> Result<(), AuditError> {
+    let head = checkpoint_path(path);
+    let mut temp = head.as_os_str().to_owned();
+    temp.push(".tmp");
+    let temp = PathBuf::from(temp);
+    let mac = hex::encode(checkpoint_mac(key, seq, hash).finalize().into_bytes());
+    let body = serde_json::json!({ "seq": seq, "hash": hash, "mac": mac }).to_string();
+    let mut file = File::create(&temp)?;
+    file.write_all(body.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&temp, &head)?;
+    Ok(())
+}
+
+/// Checks the log of `entries` entries, ending at `head_hash`, against its
+/// checkpoint. The log may run one entry past the checkpoint: that is the window
+/// in which a crash can fall between an append and its checkpoint.
+fn check_checkpoint(
+    path: &Path,
+    key: &[u8],
+    entries: u64,
+    head_hash: &str,
+) -> Result<(), AuditError> {
+    let text = match std::fs::read_to_string(checkpoint_path(path)) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return match entries {
+                0 => Ok(()),
+                _ => Err(AuditError::Broken {
+                    seq: entries - 1,
+                    reason: "head checkpoint is missing",
+                }),
+            };
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let value: Value = serde_json::from_str(&text)?;
+    let fields = (
+        value["seq"].as_u64(),
+        value["hash"].as_str(),
+        value["mac"].as_str().and_then(|mac| hex::decode(mac).ok()),
+    );
+    let (Some(seq), Some(hash), Some(mac)) = fields else {
+        return Err(AuditError::Broken {
+            seq: entries,
+            reason: "head checkpoint is malformed",
+        });
+    };
+    if checkpoint_mac(key, seq, hash).verify_slice(&mac).is_err() {
+        return Err(AuditError::Broken {
+            seq: entries,
+            reason: "head checkpoint does not verify under the key",
+        });
+    }
+
+    if entries < seq + 1 {
+        return Err(AuditError::Broken {
+            seq,
+            reason: "log is shorter than its head checkpoint: entries were removed",
+        });
+    }
+    if entries > seq + 2 {
+        return Err(AuditError::Broken {
+            seq: seq + 2,
+            reason: "entries were appended without a checkpoint",
+        });
+    }
+    if entries == seq + 1 && hash != head_hash {
+        return Err(AuditError::Broken {
+            seq,
+            reason: "head checkpoint does not match the log",
+        });
+    }
+    Ok(())
 }
 
 /// Checks every entry in the log at `path`.
@@ -415,6 +513,9 @@ fn verify_with(path: &Path, key: Option<&[u8]>) -> Result<VerifyReport, AuditErr
         expected_seq += 1;
     }
 
+    if let Some(key) = key {
+        check_checkpoint(path, key, expected_seq, &prev)?;
+    }
     Ok(VerifyReport {
         entries: expected_seq,
         head: prev,
@@ -633,6 +734,75 @@ mod tests {
         let text = std::fs::read_to_string(&first).unwrap();
         std::fs::write(&first, text.replace("t0", "rm")).unwrap();
         assert!(matches!(verify(&path), Err(AuditError::Broken { .. })));
+    }
+
+    #[test]
+    fn removing_the_newest_entries_is_detected_by_the_checkpoint() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        {
+            let log = AuditLog::open_keyed(&path, b"key").unwrap();
+            for n in 0..3 {
+                log.append("tool_call", json!({ "n": n })).unwrap();
+            }
+        }
+        // Without a checkpoint the shorter prefix is a valid chain.
+        let text = std::fs::read_to_string(&path).unwrap();
+        let kept: String = text
+            .lines()
+            .take(2)
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(&path, kept).unwrap();
+
+        assert!(matches!(
+            verify_keyed(&path, b"key"),
+            Err(AuditError::Broken { reason, .. }) if reason.contains("shorter")
+        ));
+    }
+
+    #[test]
+    fn a_missing_checkpoint_is_detected() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        {
+            let log = AuditLog::open_keyed(&path, b"key").unwrap();
+            log.append("tool_call", json!({ "n": 0 })).unwrap();
+        }
+        std::fs::remove_file(checkpoint_path(&path)).unwrap();
+        assert!(matches!(
+            verify_keyed(&path, b"key"),
+            Err(AuditError::Broken { reason, .. }) if reason.contains("missing")
+        ));
+    }
+
+    #[test]
+    fn one_entry_past_the_checkpoint_is_the_crash_window() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let checkpoint;
+        {
+            let log = AuditLog::open_keyed(&path, b"key").unwrap();
+            log.append("tool_call", json!({ "n": 0 })).unwrap();
+            checkpoint = std::fs::read(checkpoint_path(&path)).unwrap();
+            log.append("tool_call", json!({ "n": 1 })).unwrap();
+        }
+        // A crash after the second append but before its checkpoint leaves the
+        // checkpoint behind by one entry. That must still verify.
+        std::fs::write(checkpoint_path(&path), checkpoint).unwrap();
+        assert_eq!(verify_keyed(&path, b"key").unwrap().entries, 2);
+    }
+
+    #[test]
+    fn deleting_the_whole_log_is_detected_by_the_checkpoint() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        {
+            let log = AuditLog::open_keyed(&path, b"key").unwrap();
+            log.append("tool_call", json!({ "n": 0 })).unwrap();
+        }
+        std::fs::remove_file(&path).unwrap();
+        assert!(verify_keyed(&path, b"key").is_err());
     }
 
     #[test]

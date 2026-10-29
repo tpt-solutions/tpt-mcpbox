@@ -158,7 +158,7 @@ v0.1.0.
 | R6 | OCI pulls are refused (`ToolError::Unsupported`), so there is no supply-chain path to audit yet. | Open (feature gap) |
 | R7 | Upstream responses are scanned only against the per-upstream `scan` rules an operator writes, and prompts are not scanned. Known secret values are redacted. | Partly mitigated |
 | R8 | Client-side rate-limit state is never evicted, so memory grows with the number of distinct session ids. | Open |
-| R9 | Truncation of the newest audit entries is not detected without an external head checkpoint. Without `audit.key_env` the chain hash is unkeyed, so someone who can write the file can also recompute the whole chain. | Open (keying is opt-in) |
+| R9 | With `audit.key_env`, each append also writes a keyed head checkpoint (`<log>.head`), so removing the newest entries, or the whole log, is detected. Replaying an older log and checkpoint together is not, and neither is deleting both. Without a key the chain is unkeyed and rebuildable, and truncation is not detected. | Open (keyed checkpoint is opt-in) |
 | R10 | Only one shared bearer token exists. There is no per-client token and no rotation without restart. | Open |
 | R11 | Fuzz targets cover the JSON-RPC parser, config parser and policy input, and run weekly in CI. The WIT boundary has no target yet. | Partly mitigated |
 
