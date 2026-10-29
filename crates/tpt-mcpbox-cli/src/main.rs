@@ -16,6 +16,10 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
+
+/// How often `run` checks the configuration file for edits.
+const CONFIG_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 use clap::{CommandFactory, Parser, Subcommand};
 use tpt_mcpbox_config::load;
@@ -398,6 +402,21 @@ fn run_command(
         // `build_router` validates the overridden configuration, so a flag that
         // leaves the hub unable to serve is refused here, not at first call.
         let hub = serve::build_router(&loaded.config, base).await?;
+        // Edits to the file's policy take effect while the hub runs. The `run`
+        // flags are re-applied to each edit, so they stay in force.
+        let reload = tpt_mcpbox_config::reload::watch_config(
+            path.clone(),
+            ValidationMode::Serve,
+            CONFIG_POLL_INTERVAL,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        serve::follow_policy(
+            reload,
+            std::sync::Arc::clone(&hub.policy),
+            loaded.config.clone(),
+            move |config| apply_run_overrides(config, transport, dry_run),
+        );
         serve::serve(
             hub,
             loaded.config.server.clone(),

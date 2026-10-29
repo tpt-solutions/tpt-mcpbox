@@ -46,5 +46,10 @@ tpt-mcpbox manpage ./man
 ## Running the hub
 
 - Stop it with Ctrl-C or SIGTERM. In-flight calls get a short drain period.
-- Configuration is read at start. Restart after editing it.
+- The `policy` section is re-read while the hub runs. The file is checked every
+  two seconds. A valid edit takes effect on the next call, and an invalid one is
+  logged and ignored, so the previous rules stay in force. `run --dry-run` and
+  `run --transport` still apply after an edit.
+- Every other section is read at start. Restart the hub after changing it; the
+  hub logs a warning when such an edit is seen.
 - Only one hub can write a given audit log at a time.

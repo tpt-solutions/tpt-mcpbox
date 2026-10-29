@@ -56,6 +56,45 @@ fn rule(id: &str, effect: Effect) -> Rule {
 }
 
 #[test]
+fn apply_changes_the_rules_for_every_holder() {
+    let policy = std::sync::Arc::new(
+        Policy::from_config(&dsl_only(vec![tool_rule(
+            "allow-search",
+            Effect::Allow,
+            "search",
+        )]))
+        .expect("compiles"),
+    );
+    let holder = std::sync::Arc::clone(&policy);
+    assert!(holder.evaluate(&call("search")).is_allowed());
+
+    policy
+        .apply(&dsl_only(vec![tool_rule(
+            "deny-search",
+            Effect::Deny,
+            "search",
+        )]))
+        .expect("applies");
+    assert!(!holder.evaluate(&call("search")).is_allowed());
+}
+
+#[test]
+fn a_rejected_config_leaves_the_rules_in_force() {
+    let policy = Policy::from_config(&dsl_only(vec![tool_rule(
+        "allow-search",
+        Effect::Allow,
+        "search",
+    )]))
+    .expect("compiles");
+    assert!(
+        policy
+            .apply(&dsl_only(vec![tool_rule("bad", Effect::Allow, "[")]))
+            .is_err()
+    );
+    assert!(policy.evaluate(&call("search")).is_allowed());
+}
+
+#[test]
 fn outbound_deny_rules_refuse_only_the_hosts_they_name() {
     let mut deny = rule("deny-evil", Effect::Deny);
     deny.hosts = vec!["*.evil.test".to_owned()];
@@ -400,7 +439,7 @@ fn reload_drops_counters_of_removed_rules() {
     let reloaded = policy
         .reload(&dsl_only(vec![tool_rule("other", Effect::Allow, "search")]))
         .expect("reload compiles");
-    assert_eq!(reloaded.dsl.quota_bucket_count(), 0);
+    assert_eq!(reloaded.compiled().dsl.quota_bucket_count(), 0);
 }
 
 #[test]

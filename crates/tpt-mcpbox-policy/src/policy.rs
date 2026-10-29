@@ -20,6 +20,7 @@
 //! So an allow needs an explicit allow and no explicit deny, and a missing rule
 //! can never open the gate on its own.
 
+use std::sync::{PoisonError, RwLock, RwLockReadGuard};
 use std::time::Instant;
 
 use tpt_mcpbox_config::{Effect, PolicyConfig, RuleConstraints};
@@ -42,8 +43,18 @@ struct Opinion {
 }
 
 /// The whole `policy` section, compiled and ready to evaluate.
+///
+/// The rules sit behind a lock so [`Policy::apply`] can replace them in place.
+/// Every holder of one `Policy` (the router, the gates, the outbound hooks) then
+/// sees the new rules from its next call.
 #[derive(Debug)]
 pub struct Policy {
+    current: RwLock<Compiled>,
+}
+
+/// The compiled rules and the mode they run in.
+#[derive(Debug)]
+struct Compiled {
     dsl: Engine,
     rego: Option<RegoEngine>,
     dry_run: bool,
@@ -60,11 +71,11 @@ impl Policy {
     pub fn from_config(config: &PolicyConfig) -> Result<Self, PolicyError> {
         let dsl = Engine::compile(config)?;
         let rego = config.rego.as_deref().map(RegoEngine::load).transpose()?;
-        Ok(Self {
+        Ok(Self::from_compiled(Compiled {
             dsl,
             rego,
             dry_run: config.dry_run,
-        })
+        }))
     }
 
     /// Compile a policy whose Rego module is given as source rather than a path.
@@ -81,11 +92,11 @@ impl Policy {
     ) -> Result<Self, PolicyError> {
         let dsl = Engine::compile(config)?;
         let rego = RegoEngine::from_source(module_name, rego_source.to_owned())?;
-        Ok(Self {
+        Ok(Self::from_compiled(Compiled {
             dsl,
             rego: Some(rego),
             dry_run: config.dry_run,
-        })
+        }))
     }
 
     /// Evaluate one request.
@@ -102,10 +113,11 @@ impl Policy {
     /// host allowlist governs outbound access. Dry-run never refuses.
     #[must_use]
     pub fn outbound_denial(&self, input: &PolicyInput) -> Option<String> {
-        if self.dry_run {
+        let compiled = self.compiled();
+        if compiled.dry_run {
             return None;
         }
-        match self.dsl.outcome(input, Instant::now(), false) {
+        match compiled.dsl.outcome(input, Instant::now(), false) {
             DslOutcome::Matched(verdict) if verdict.effect == Effect::Deny => Some(verdict.rule_id),
             _ => None,
         }
@@ -123,8 +135,9 @@ impl Policy {
     /// Evaluate one request as of `now`. Exists so quota windows can be tested
     /// without sleeping. `charge` says whether a matched quota is spent.
     pub(crate) fn evaluate_at(&self, input: &PolicyInput, now: Instant, charge: bool) -> Decision {
+        let compiled = self.compiled();
         let mut opinions = Vec::with_capacity(2);
-        if let DslOutcome::Matched(verdict) = self.dsl.outcome(input, now, charge) {
+        if let DslOutcome::Matched(verdict) = compiled.dsl.outcome(input, now, charge) {
             opinions.push(Opinion {
                 effect: verdict.effect,
                 rule_id: Some(verdict.rule_id),
@@ -132,16 +145,16 @@ impl Policy {
                 constraints: verdict.constraints,
             });
         }
-        if let Some(rego) = &self.rego {
+        if let Some(rego) = &compiled.rego {
             opinions.push(rego_opinion(rego, input));
         }
 
         let decided = combine(opinions).unwrap_or_else(|| Opinion {
-            effect: self.dsl.default_effect(),
+            effect: compiled.dsl.default_effect(),
             rule_id: None,
             reason: format!(
                 "no rule matched; policy.default is {}",
-                match self.dsl.default_effect() {
+                match compiled.dsl.default_effect() {
                     Effect::Allow => "allow",
                     Effect::Deny => "deny",
                 }
@@ -150,7 +163,7 @@ impl Policy {
         });
 
         let decision = enforce(
-            self.dry_run,
+            compiled.dry_run,
             decided.effect,
             decided.rule_id,
             decided.reason,
@@ -178,8 +191,39 @@ impl Policy {
     /// because the caller keeps using `self`.
     pub fn reload(&self, config: &PolicyConfig) -> Result<Self, PolicyError> {
         let next = Self::from_config(config)?;
-        next.dsl.inherit_quotas(&self.dsl);
+        let current = self.compiled();
+        next.compiled().dsl.inherit_quotas(&current.dsl);
         Ok(next)
+    }
+
+    /// Replaces the rules in force with `config`, in place. Every holder of this
+    /// policy uses the new rules from its next call, and quota counters carry
+    /// over as in [`Policy::reload`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Policy::reload`]. On error the rules in force are unchanged.
+    pub fn apply(&self, config: &PolicyConfig) -> Result<(), PolicyError> {
+        let next = self.reload(config)?.into_compiled();
+        *self.current.write().unwrap_or_else(PoisonError::into_inner) = next;
+        Ok(())
+    }
+
+    fn from_compiled(compiled: Compiled) -> Self {
+        Self {
+            current: RwLock::new(compiled),
+        }
+    }
+
+    fn into_compiled(self) -> Compiled {
+        self.current
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The rules in force, held for the duration of one evaluation.
+    fn compiled(&self) -> RwLockReadGuard<'_, Compiled> {
+        self.current.read().unwrap_or_else(PoisonError::into_inner)
     }
 }
 

@@ -85,7 +85,7 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 - [x] Secrets (`secrets::SecretStore`): load from process env + gitignored `.env`; `secret → header` mapping (e.g. `GITHUB_TOKEN` → `Authorization: Bearer …`)
 - [x] `SecretString` wrapper: zeroize on drop, `Debug`/`Display` redaction, never serialized
 - [~] Central redaction filter applied to logs, error messages, audit entries (`secrets::Redactor` implemented; **done for upstream stderr** in the proxy, and **for every agent-facing reply** (tool output, error text, upstream messages) via `ToolHandler::with_redactor`, verified end to end). **Open:** global `tracing` layer, audit entries (Phase 9).
-- [ ] Hot reload: watch config, atomic swap, `SIGHUP` (Unix) / equivalent; reload-safe pool draining (`reload::watch_config` polling watcher + validate-before-swap `ReloadHandle` done; `SIGHUP` and pool draining outstanding, latter needs Phase 4)
+- [~] Hot reload: watch config, atomic swap, `SIGHUP` (Unix) / equivalent; reload-safe pool draining — **done for policy:** `run` watches the file and applies a valid edit of the `policy` section in place (`Policy::apply`, every holder sees the new rules); other sections log a restart warning. **Open:** `SIGHUP` (polling is the only trigger, as the reload module's design says), and reloading tools, upstreams and audit without a restart.
 - [x] `tpt-mcpbox validate` command (plus `tpt-mcpbox schema`)
 
 ## Phase 3 — Policy Engine (`tpt-mcpbox-policy`)
@@ -94,9 +94,8 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 > DSL and an embedded Rego module (`regorus`, no `std` feature, so no Spectre
 > libraries are needed) into one `Policy`. Opinions combine as: any deny wins,
 > then any allow admits with the tightest limits, then `policy.default`.
-> Still open: wiring `Policy::reload` into the config `ReloadHandle` (needs the
-> runtime in Phase 4 to be useful); the runtime enforcement of allow-time limits
-> (Phase 4).
+> Policy reload is wired (`Policy::apply`, followed by `run`). Still open: the
+> runtime enforcement of allow-time limits beyond the outbound timeout cap.
 
 - [x] Policy input schema: caller identity (`caller`), tool, method, arguments, host, fs path, resource URIs (`uris`)
 - [x] Decision type: allow / deny / allow-with-constraints + reason + rule id (`Decision::constraints` carries memory/time limits and the quota)

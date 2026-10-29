@@ -24,8 +24,9 @@ use tpt_mcpbox_audit::AuditLog;
 use tpt_mcpbox_config::Redactor;
 use tpt_mcpbox_config::model::SecretBinding;
 use tpt_mcpbox_config::model::{
-    Config, HttpServerConfig, MetricsConfig, ServerConfig, UpstreamConfig,
+    Config, HttpServerConfig, MetricsConfig, PolicyConfig, ServerConfig, UpstreamConfig,
 };
+use tpt_mcpbox_config::reload::{ReloadEvent, ReloadHandle};
 use tpt_mcpbox_config::secrets::{SecretStore, SecretString};
 use tpt_mcpbox_config::validate::{self, Severity, ValidationMode};
 use tpt_mcpbox_policy::Policy;
@@ -303,6 +304,7 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
         redactor,
         http_authorization,
         upstream_completions,
+        policy,
     })
 }
 
@@ -315,6 +317,72 @@ pub(crate) struct Hub {
     pub(crate) http_authorization: Option<Arc<SecretString>>,
     /// Whether any upstream declared `completions` in its handshake.
     pub(crate) upstream_completions: bool,
+    /// The policy the router and its gates evaluate with. Reloads replace its
+    /// rules in place.
+    pub(crate) policy: Arc<Policy>,
+}
+
+/// Applies an accepted edit of the configuration file to the live policy.
+///
+/// Only the `policy` section takes effect. `overrides` re-applies the `run`
+/// flags, so a `--dry-run` or `--transport` given at start stays in force.
+/// Returns whether any other section changed, since those need a restart.
+pub(crate) fn apply_edit(
+    policy: &Policy,
+    current: &Config,
+    edited: &Config,
+    overrides: &dyn Fn(&mut Config),
+) -> Result<bool, String> {
+    let mut next = edited.clone();
+    overrides(&mut next);
+    policy
+        .apply(&next.policy)
+        .map_err(|error| format!("policy: {error}"))?;
+    Ok(without_policy(current) != without_policy(&next))
+}
+
+/// Everything but the policy, for comparing two configurations.
+fn without_policy(config: &Config) -> Config {
+    let mut rest = config.clone();
+    rest.policy = PolicyConfig::default();
+    rest
+}
+
+/// Follows the configuration file: each accepted edit is applied to `policy`,
+/// and a rejected edit is logged while the previous rules stay in force.
+pub(crate) fn follow_policy(
+    mut reload: ReloadHandle,
+    policy: Arc<Policy>,
+    initial: Config,
+    overrides: impl Fn(&mut Config) + Send + 'static,
+) {
+    tokio::spawn(async move {
+        let mut current = initial;
+        while let Ok(event) = reload.changed().await {
+            match event {
+                ReloadEvent::Reloaded => {
+                    let edited = reload.snapshot().config.clone();
+                    match apply_edit(&policy, &current, &edited, &overrides) {
+                        Ok(restart_needed) => {
+                            tracing::info!("policy reloaded from the configuration file");
+                            if restart_needed {
+                                tracing::warn!(
+                                    "the configuration changed outside `policy`; restart the hub for it to take effect"
+                                );
+                            }
+                            current = edited;
+                        }
+                        Err(error) => {
+                            tracing::error!(%error, "policy reload refused; the previous rules stay in force");
+                        }
+                    }
+                }
+                ReloadEvent::Rejected(error) => {
+                    tracing::warn!(%error, "configuration edit rejected; the previous one stays in force");
+                }
+            }
+        }
+    });
 }
 
 /// Serves the hub on every enabled transport, then drains in-flight calls.
@@ -829,6 +897,61 @@ fn parse_descriptors(json: &str) -> Result<Vec<Tool>, String> {
 mod tests {
     use super::*;
 
+    const EDIT_BASE: &str = "version: 1
+policy:
+  default: deny
+  rules:
+    - id: allow-read
+      effect: allow
+      tool: read_file
+";
+
+    fn tool_call(tool: &str) -> tpt_mcpbox_policy::PolicyInput {
+        tpt_mcpbox_policy::PolicyInput {
+            method: "tools/call".to_owned(),
+            tool: Some(tool.to_owned()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_edited_policy_applies_in_place_and_other_edits_need_a_restart() {
+        let current = tpt_mcpbox_config::load::load_str(EDIT_BASE, "test").expect("loads");
+        let policy = Policy::from_config(&current.policy).expect("compiles");
+        assert!(policy.evaluate(&tool_call("read_file")).is_allowed());
+
+        let swapped = EDIT_BASE.replace("read_file", "write_file");
+        let edited = tpt_mcpbox_config::load::load_str(&swapped, "test").expect("loads");
+        let restart = apply_edit(&policy, &current, &edited, &|_| {}).expect("applies");
+        assert!(!restart, "a policy-only edit needs no restart");
+        assert!(!policy.evaluate(&tool_call("read_file")).is_allowed());
+        assert!(policy.evaluate(&tool_call("write_file")).is_allowed());
+
+        let moved = format!(
+            "{swapped}audit:
+  path: elsewhere.log
+"
+        );
+        let elsewhere = tpt_mcpbox_config::load::load_str(&moved, "test").expect("loads");
+        let restart = apply_edit(&policy, &edited, &elsewhere, &|_| {}).expect("applies");
+        assert!(restart, "an edit outside `policy` needs a restart");
+    }
+
+    #[test]
+    fn run_overrides_stay_in_force_across_an_edit() {
+        let current = tpt_mcpbox_config::load::load_str(EDIT_BASE, "test").expect("loads");
+        let policy = Policy::from_config(&current.policy).expect("compiles");
+        let edited = tpt_mcpbox_config::load::load_str(EDIT_BASE, "test").expect("loads");
+        apply_edit(&policy, &current, &edited, &|config| {
+            config.policy.dry_run = true;
+        })
+        .expect("applies");
+        // Denied by the rules, but allowed under the dry-run override.
+        assert!(policy.evaluate(&tool_call("write_file")).is_allowed());
+        let decision = policy.evaluate(&tool_call("write_file"));
+        assert_eq!(decision.would_be, tpt_mcpbox_config::Effect::Deny);
+    }
+
     /// The `fake_upstream` example, built next to the test binary. A plain
     /// `cargo test -p tpt-mcpbox-cli` builds it; a name-filtered run may not.
     fn fake_upstream() -> std::path::PathBuf {
@@ -1072,14 +1195,16 @@ mod tests {
     fn an_empty_hub_advertises_only_tools() {
         let policy = Policy::from_config(&tpt_mcpbox_config::model::PolicyConfig::default())
             .expect("default policy compiles");
+        let policy = Arc::new(policy);
         let hub = Hub {
             router: Arc::new(Router::new(
                 Limiter::new([], Limits::default()),
-                Arc::new(policy),
+                Arc::clone(&policy),
             )),
             redactor: Arc::new(Redactor::new()),
             http_authorization: None,
             upstream_completions: true,
+            policy,
         };
         let capabilities = session_config(&hub).capabilities;
         assert!(capabilities.tools.is_some());
