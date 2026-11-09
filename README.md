@@ -27,8 +27,13 @@ execution. `tpt-mcpbox` makes the blast radius explicit and small:
   cannot read the token it was issued.
 - **Hard resource limits.** Memory, execution time and rate limits are enforced
   per tool and per client, so a runaway call cannot take the host with it.
+- **Outbound traffic is decided per request.** Every network request a tool
+  makes is checked by the same policy as the call itself, with its host and URI,
+  and only public addresses are reached.
 - **Verified tool modules.** Each `.wasm` can be pinned by SHA-256 and, when a
-  minisign key is configured, must carry a valid signature before it runs.
+  minisign key is configured, must carry a valid signature before it runs. A
+  module can also come from an OCI registry, where the manifest and module
+  digests are checked before anything is cached or run.
 - **Scanned upstream responses.** Tool results and text resources from upstream
   servers can be checked against regex rules that redact or refuse them before
   they reach the agent.
@@ -41,18 +46,19 @@ execution. `tpt-mcpbox` makes the blast radius explicit and small:
 **Pre-release.** Nothing is published yet; `v0.1.0` is in progress. The core
 pieces are built and tested: protocol, configuration, policy, Wasm runtime,
 router, upstream proxy, guest SDK, observability and the CLI. Security review
-fixes are in progress. See [todo.md](todo.md) for the full checklist.
+fixes are in progress. See [todo.md](todo.md) for the full checklist and
+[CHANGELOG.md](CHANGELOG.md) for what has changed.
 
 | Phase | Scope | State |
 |---|---|---|
 | 0 | Bootstrap & governance | done |
 | 1 | MCP protocol core (`tpt-mcpbox-protocol`) | done |
 | 2 | Configuration & secrets (`tpt-mcpbox-config`) | largely done; reload of tools and upstreams open |
-| 3 | Policy engine (`tpt-mcpbox-policy`) | largely done; policy edits apply to a running hub |
-| 4 | Wasm runtime (`tpt-mcpbox-runtime`) | largely done; anonymous OCI pull done, authenticated pulls open |
+| 3 | Policy engine (`tpt-mcpbox-policy`) | largely done; Rego is a documented in-crate subset; policy edits apply to a running hub |
+| 4 | Wasm runtime (`tpt-mcpbox-runtime`) | largely done; OCI pulls (anonymous and with credentials) done; module signatures for OCI open |
 | 5 | Router & rate limiter (`tpt-mcpbox-router`) | largely done |
 | 6 | Passthrough proxy (`tpt-mcpbox-proxy`) | largely done |
-| 7 | Guest tool SDK (`tpt-mcpbox-sdk`) | largely done |
+| 7 | Guest tool SDK (`tpt-mcpbox-sdk`) | largely done; typed results and content blocks (`envelope-v1`) done |
 | 8 | Example tools (`tools/`) | largely done; release assets open |
 | 9 | Observability (`tpt-mcpbox-audit`) | largely done |
 | 10 | CLI (`tpt-mcpbox-cli`) | largely done; `pull` done |
@@ -69,8 +75,8 @@ for the host target.
 |---|---|---|
 | `tpt-mcpbox-protocol` | lib | JSON-RPC 2.0 / MCP types, stdio + Streamable HTTP transports, session and dispatch |
 | `tpt-mcpbox-config` | lib | `tpt-mcpbox.yaml` model, validation, discovery, secrets |
-| `tpt-mcpbox-policy` | lib | Deny-by-default policy engine (YAML DSL + embedded Rego) |
-| `tpt-mcpbox-runtime` | lib | `wasmtime` component runtime, warm pool, WASI capability mapper |
+| `tpt-mcpbox-policy` | lib | Deny-by-default policy engine (YAML DSL + a Rego subset) |
+| `tpt-mcpbox-runtime` | lib | `wasmtime` component runtime, warm pool, WASI capability mapper, OCI module pulls, outbound send path |
 | `tpt-mcpbox-proxy` | lib | Policy-enforcing passthrough to supervised upstream MCP servers |
 | `tpt-mcpbox-router` | lib | Namespaced aggregation, rate limiting, cancellation, graceful shutdown |
 | `tpt-mcpbox-audit` | lib | Hash-chained, segmented audit log and tracing setup |
@@ -103,6 +109,10 @@ Other commands:
 - `tpt-mcpbox policy test <input.json>` explains a decision and exits 1 on deny.
 - `tpt-mcpbox audit verify` checks the audit chain.
 - `tpt-mcpbox init tool <DIR> --sdk-path <PATH>` scaffolds a new tool project.
+- `tpt-mcpbox pull <REF>` fetches a tool module from an OCI registry into the
+  cache, checks that it loads as a tool component, and prints its `sha256` to
+  pin. `--auth-env NAME` names an environment variable that holds
+  `username:password` for a private registry.
 
 Wire it into an MCP client (Claude Code / Claude Desktop):
 
@@ -168,6 +178,11 @@ audit:
 
 Build the example tools with `cargo build --release --target wasm32-wasip2` in
 each `tools/` crate first. The paths in the sample configuration assume that.
+
+To take a module from an OCI registry instead of a local file, set `oci_ref` in
+place of `wasm_path`, and pin it with `sha256`. A private registry takes
+`username:password` from a secret that `oci_auth` names, so the password stays
+out of the configuration.
 
 Documentation:
 

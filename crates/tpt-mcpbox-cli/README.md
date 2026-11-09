@@ -13,15 +13,16 @@ The binary is named `tpt-mcpbox`. The crate is `tpt-mcpbox-cli`.
 
 | Command | What it does |
 |---|---|
-| `run` | Serves the configured tools and upstreams over stdio, and over Streamable HTTP when configured. Stdout carries the protocol, so logs go to stderr only. |
+| `run` | Serves the configured tools and upstreams over stdio, and over Streamable HTTP when configured. Tools that name an `oci_ref` are pulled into the module cache at startup. Stdout carries the protocol, so logs go to stderr only. |
 | `validate` | Loads a configuration and reports every problem with it. `--warn-only` reports without failing. `--offline` skips checks that need the host, such as secrets and files on disk. |
 | `schema` | Prints the JSON Schema for `tpt-mcpbox.yaml`. `-o`/`--output` also writes it to a file. |
 | `init` | Writes a starter `tpt-mcpbox.yaml`. `-o`/`--output` chooses the path, and `--force` overwrites an existing file. |
 | `init tool <DIR>` | Scaffolds a tool component project in `DIR`. `--sdk-path` points at the `tpt-mcpbox-sdk` crate, which is written as a path dependency because the SDK is not published yet. |
 | `tools ls` | Lists the tools the configuration exposes |
-| `tools call <NAME>` | Calls one tool and prints its result. `-a`/`--args` takes a JSON object. It goes through the same policy, limits and audit log as `run`, so it is refused while a hub is running against the same audit log. |
+| `tools call <NAME>` | Calls one tool and prints the text of its result. Other content blocks are printed as JSON. `-a`/`--args` takes a JSON object. It goes through the same policy, limits and audit log as `run`, so it is refused while a hub is running against the same audit log. |
 | `policy test <INPUT>` | Evaluates one policy input, read from a JSON file, and prints the decision. The file has `method`, `tool`, `arguments` and, optionally, `caller`, `host`, `fs_path` and `uris`. Exits 0 when allowed and 1 when denied. |
 | `audit verify <PATH>` | Checks the hash chain and reports the first break. A break is an error, so the exit code is non-zero. |
+| `pull <REF>` | Fetches a tool module from an OCI registry into the cache, loads it to check that it is a tool component, and prints its `sha256`, which is the value to pin. `--cache-dir` chooses the cache, which otherwise comes from `MCPBOX_CACHE_DIR` or the platform cache directory. `--auth-env NAME` names an environment variable holding `username:password` for a private registry. The credentials are never printed. |
 | `completion <SHELL>` | Prints a shell completion script to stdout |
 | `man <DIR>` | Writes man pages for the command and its subcommands into `DIR` |
 | `version` | Prints the version and exits |
@@ -89,7 +90,7 @@ cargo build --release -p tpt-mcpbox-cli
 ./target/release/tpt-mcpbox --version
 ```
 
-The minimum supported Rust version is **1.85**.
+The minimum supported Rust version is **1.95**.
 
 ## Testing
 

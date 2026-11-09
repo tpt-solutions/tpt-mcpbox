@@ -18,3 +18,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   listener.
 - Audit recording of every call through `Router::with_audit`.
 - Resource and prompt routing, with policy checks on every read.
+- `add_wasm` takes a `GuestTool`, so the router knows each tool's result format.
+- `RouterError::MalformedResult`, returned when a Wasm result does not match its
+  declared format.
+
+### Changed
+
+- `ToolOutput::Wasm` carries a decoded `CallToolResult` rather than a string.
+- Outbound requests of a Wasm tool are checked by the whole policy engine, with
+  the request's host and URI.
+

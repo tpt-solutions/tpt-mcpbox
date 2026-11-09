@@ -13,6 +13,9 @@ Upstreams are reached in one of two ways:
 Every forwarded call is checked by the policy engine **before** it leaves the
 process. A denied call is never sent upstream.
 
+HTTPS uses `rustls` with the pure-Rust `rustls-rustcrypto` provider, and the
+bundled Mozilla root store, so results do not depend on the host's certificates.
+
 > **Status: pre-release (0.1.0 in progress).** The API may change before 0.1.0.
 > See [todo.md](../../todo.md) for open items.
 
@@ -49,7 +52,7 @@ The crate is not yet published to crates.io. Depend on it by path:
 tpt-mcpbox-proxy = { path = "../tpt-mcpbox-proxy" }
 ```
 
-The minimum supported Rust version is **1.85**.
+The minimum supported Rust version is **1.95**.
 
 ## Testing
 

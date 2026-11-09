@@ -16,3 +16,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Forwarding of upstream resources and prompts, with the same policy checks as
   tools.
 - Scrubbing of upstream stderr through the secret `Redactor` before logging.
+### Changed
+
+- HTTPS uses `rustls` with the `rustls-rustcrypto` provider, in place of `ring`.
+- Response scanning follows the MCP embedded resource shape.
+

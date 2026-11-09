@@ -30,6 +30,14 @@ URIs are lowercased, dot segments are resolved and malformed values are
 rejected. This stops `..` tricks and mixed-case hosts from slipping past a
 rule.
 
+### Outbound requests
+
+Each outbound request a Wasm tool makes is decided by the whole policy, with the
+request's host and URI (`Policy::evaluate_recheck`). The check does not spend
+quota again. An allow rule's `hosts` therefore limits a tool to those hosts.
+`paths` is refused when the configuration loads, because a tool call never
+carries a path, so such a rule could never apply.
+
 ## The sample policy
 
 From [`examples/tpt-mcpbox.yaml`](../../examples/tpt-mcpbox.yaml):
@@ -76,7 +84,7 @@ The crate is not yet published to crates.io. Depend on it by path:
 tpt-mcpbox-policy = { path = "../tpt-mcpbox-policy" }
 ```
 
-The minimum supported Rust version is **1.85**.
+The minimum supported Rust version is **1.95**.
 
 ## Testing
 

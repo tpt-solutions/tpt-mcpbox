@@ -20,6 +20,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   debugging.
 - `tpt-mcpbox version`.
 - Prometheus metrics on a loopback listener.
+- `tpt-mcpbox pull <REF>`, with `--cache-dir` and `--auth-env`.
+- `tools call` prints the text blocks of a result, and prints other blocks as
+  JSON.
+
+### Changed
+
+- `run` pulls `oci_ref` tools into the module cache at startup.
 
 ### Security
 
@@ -27,3 +34,5 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Every reply is scrubbed of secret values, and the server stops cleanly on
   Ctrl-C or SIGTERM.
 - Upstream stderr is redacted before it is logged.
+- `pull` never prints registry credentials.
+

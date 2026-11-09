@@ -5,9 +5,10 @@ call runs inside a `wasmtime` component instance whose only ambient authority
 comes from its configured capabilities.
 
 > **Status: pre-release (0.1.0 in progress).** The API may change before 0.1.0.
-> Modules load from local paths or from an anonymous OCI pull (`oci_ref`),
-> pinned by SHA-256 or by a digest reference. Signature verification is minisign
-> for local paths only.
+> Modules load from local paths, or from an OCI registry (`oci_ref`), anonymously
+> or with credentials from a secret. A registry module is pinned by its `sha256`
+> or by a digest reference. Signature verification is minisign for local paths
+> only.
 
 ## Security model
 
@@ -16,7 +17,9 @@ comes from its configured capabilities.
   its code does.
 - **Network through the host.** Outbound HTTP goes through a host `wasi:http`
   handler. The handler enforces the tool's domain allowlist, requires HTTPS, and
-  injects secret headers.
+  injects secret headers. Every address a name resolves to must be public, and
+  the connection goes to the address that was checked. Response bodies are capped
+  at 16 MiB.
 - **Environment only when granted.** Environment variables are exposed only
   when the configuration grants them.
 - **Secrets never enter the guest.** A tool gets the response, not the token
@@ -31,7 +34,9 @@ comes from its configured capabilities.
 | Item | Purpose |
 |---|---|
 | `Runtime::new` | Builds the `wasmtime` engine, the pooling allocator and the sandboxed WASI and `wasi:http` linker |
-| `Runtime::load_tool` | Compiles one tool from its configuration |
+| `Runtime::load_tool` | Compiles one tool from a local module |
+| `Runtime::load_tool_async` | Loads a tool from its configuration, pulling an `oci_ref` module into the cache first |
+| `oci` | Module pulls from OCI registries: `fetch_module`, `fetch_module_with_auth`, `Cache` and `default_cache_dir` |
 | `LoadedTool::call` | Runs one tool with the JSON arguments from `tools/call` |
 | `LoadedTool::descriptors` | The tool list the component reports from `describe` |
 | `Runtime::self_test` | Runs a probe module at startup to prove the sandbox is in effect |
@@ -55,7 +60,9 @@ world tool {
 
 `describe` returns a JSON array of tools, each with a name, a description and
 an input schema. `call` runs one tool. Its arguments are the JSON object from
-`tools/call`, and its result is JSON text or an error message. Tools import
+`tools/call`, and its result is text or an error message. A tool that declares
+`"result": "envelope-v1"` in `describe` returns a JSON envelope of MCP content
+blocks instead, and the host decodes it. Tools import
 only the WASI interfaces they need, and the host links only the ones that
 their grants allow.
 
@@ -77,8 +84,9 @@ The crate is not yet published to crates.io. Depend on it by path:
 tpt-mcpbox-runtime = { path = "../tpt-mcpbox-runtime" }
 ```
 
-The minimum supported Rust version is **1.85**. Building the runtime needs the
-dependencies that `wasmtime` 34 requires; the workspace lockfile pins them.
+The minimum supported Rust version is **1.95**, as set by `rust-version` in the
+workspace `Cargo.toml`. Building the runtime needs the dependencies that
+`wasmtime` 48 requires; the workspace lockfile pins them.
 
 ## Testing and benchmarks
 
@@ -89,6 +97,8 @@ cargo bench -p tpt-mcpbox-runtime
 
 - `tests/sandbox.rs` checks that grants are enforced: an ungranted path or host
   is refused.
+- `tests/oci.rs` pulls modules from a fake registry on loopback: tags, digests,
+  bearer challenges, redirects, image indexes, credentials and the cache.
 - `tests/guest/` is a test-only tool component. The integration tests build it
   for `wasm32-wasip2`. Its own workspace keeps it out of the host build.
 - `benches/invocation.rs` measures the cost of one tool invocation.
@@ -96,7 +106,7 @@ cargo bench -p tpt-mcpbox-runtime
 ## Scope
 
 In scope: loading and running tool components, mapping capabilities to WASI
-authority, and the outbound HTTP handler.
+authority, the outbound HTTP handler, and OCI module pulls.
 
 Out of scope: deciding whether a call is allowed (`tpt-mcpbox-policy`), the
 MCP wire format (`tpt-mcpbox-protocol`), and proxying to external servers

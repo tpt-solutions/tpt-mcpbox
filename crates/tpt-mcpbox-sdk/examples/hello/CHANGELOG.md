@@ -12,3 +12,8 @@ The crate is an example and is not published (`publish = false`).
 
 - `greet`, `add` and `fetch` tools, showing text and JSON results and an
   outbound HTTP call.
+### Changed
+
+- Results are returned as `envelope-v1` content blocks. The text is unchanged.
+  Rebuild against this SDK.
+

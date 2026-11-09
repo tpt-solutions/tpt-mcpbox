@@ -13,6 +13,7 @@ work on shutdown.
 | Area | Item | What it does |
 |---|---|---|
 | Routing | `Router` | Holds the local tools (`add_wasm`) and upstream servers (`add_upstream`), and dispatches `call` to the right one |
+| Wasm results | `ToolOutput::Wasm` | Decodes a Wasm tool's result according to the format it declares. A result that does not match fails the call with `RouterError::MalformedResult` |
 | Aggregation | `Router::list`, `list_resources`, `list_prompts` | Returns one namespaced view across all sources |
 | Limits | `Limiter`, `Limits`, `Permit`, `Rejection` | Per-tool and per-client rate and concurrency limits |
 | Shutdown | `Lifecycle`, `InFlight`, `Drain`, `ShuttingDown` | Refuses new calls once shutdown starts, and waits for in-flight calls up to a timeout |
@@ -37,6 +38,12 @@ registration is all-or-nothing, so a collision adds none of that upstream's tool
   The hub stops reading requests as soon as shutdown begins, so a `SIGINT` or
   `SIGTERM` does not cut a call off half-way.
 
+## Outbound requests
+
+Each outbound request of a Wasm tool is checked by the whole policy engine, with
+the request's host and URI. The router hands that check to the runtime, and a
+request the policy does not allow is refused before it leaves the host.
+
 ## Auditing
 
 `Router::with_audit` attaches an `AuditLog`. Every call is then recorded in the
@@ -51,7 +58,7 @@ The crate is not yet published to crates.io. Depend on it by path:
 tpt-mcpbox-router = { path = "../tpt-mcpbox-router" }
 ```
 
-The minimum supported Rust version is **1.85**.
+The minimum supported Rust version is **1.95**.
 
 ## Testing
 

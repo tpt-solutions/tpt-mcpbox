@@ -14,3 +14,8 @@ The crate is an example and is not published (`publish = false`).
   root that the host preopens.
 - Path checks that refuse absolute paths and `..` segments before the sandbox
   is reached.
+### Changed
+
+- Results are returned as `envelope-v1` content blocks. The text is unchanged.
+  Rebuild against this SDK.
+

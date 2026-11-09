@@ -24,6 +24,13 @@ those are layered on top by the other `tpt-mcpbox-*` crates.
   are routed back to the agent: `roots`, `sampling/createMessage` and
   `elicitation`.
 - **Content types**: text, image, audio, embedded resource and resource links.
+  An embedded resource nests its body under `resource`, as the specification
+  requires.
+- **Tool results**: `tools::parse_descriptors` reads the descriptors a Wasm
+  component reports, refusing unknown fields. `tools::decode_result` turns a
+  call result into a `CallToolResult`: plain text for a tool that declares no
+  format, or a JSON envelope of content blocks for a tool that declares
+  `envelope-v1`.
 - **Protocol versions**: the latest supported revision is `2025-06-18`. The
   crate also accepts `2025-03-26` and `2024-11-05` (see
   `shared::SUPPORTED_PROTOCOL_VERSIONS`).
@@ -84,7 +91,7 @@ the workspace:
 tpt-mcpbox-protocol = { path = "../tpt-mcpbox-protocol" }
 ```
 
-The minimum supported Rust version is **1.85**, the same as the workspace.
+The minimum supported Rust version is **1.95**, the same as the workspace.
 
 ## Testing
 

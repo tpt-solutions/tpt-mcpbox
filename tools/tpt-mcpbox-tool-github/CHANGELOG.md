@@ -14,3 +14,8 @@ The crate is an example and is not published (`publish = false`).
 - The GitHub token is injected by the host as the `Authorization` header and is
   never visible to the tool.
 - Percent-encoding of query text for the search URL.
+### Changed
+
+- Results are returned as `envelope-v1` content blocks. The text is unchanged.
+  Rebuild against this SDK.
+

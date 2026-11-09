@@ -16,3 +16,13 @@ workspace.
 - `http` helpers (`get_json`, `post_json`, `get_json_with_headers`) that go
   through the host's outbound `wasi:http` handler.
 - `examples/hello`, a worked example with `greet`, `add` and `fetch`.
+- `ToolResult::image`, `ToolResult::resource_text` and `ToolResult::with_block`.
+- The SDK declares `result: envelope-v1` in `describe`, and replies are MCP
+  content blocks.
+
+### Changed
+
+- `ToolResult` holds content blocks. `ToolResult::as_text` now returns `String`
+  and joins the text blocks. `ToolResult::text` and `ToolResult::json` are
+  unchanged.
+

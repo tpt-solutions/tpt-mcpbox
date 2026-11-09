@@ -54,7 +54,7 @@ The crate is not yet published to crates.io. Depend on it by path:
 tpt-mcpbox-audit = { path = "../tpt-mcpbox-audit" }
 ```
 
-The minimum supported Rust version is **1.85**.
+The minimum supported Rust version is **1.95**.
 
 ## Testing
 

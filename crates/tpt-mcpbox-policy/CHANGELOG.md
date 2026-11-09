@@ -18,3 +18,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `would_be`.
 - Input normalisation for hosts, paths and URIs (`normalize`).
 - `Policy::reload` to build a new policy from a changed configuration.
+- `Policy::evaluate_recheck` decides an outbound request with the whole engine
+  (DSL, Rego and default), using the request's host and URI, without spending
+  quota.
+- A Rego subset interpreter with load-time refusal of unsupported forms, a step
+  budget, and builtins for string, type and normalisation checks.
+
+### Changed
+
+- Rego evaluation is an in-crate interpreter, replacing `regorus`.
+- `Policy::outbound_denial` is replaced by `evaluate_recheck`.
+
+### Removed
+
+- The `regorus` dependency.
+
+### Security
+
+- An allow rule's `hosts` constrain a tool's outbound requests (SR-01).
+

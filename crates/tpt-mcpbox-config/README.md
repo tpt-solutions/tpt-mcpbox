@@ -78,7 +78,7 @@ The top level has these sections. Each one maps to a field of `model::Config`:
 |---|---|
 | `version` | Configuration schema version (currently `1`) |
 | `server` | Transports (`stdio`, `http`) and the HTTP bind address, origins and bearer token environment variable |
-| `tools` | Wasm tools: `name`, `wasm_path` or `oci_ref`, `sha256`, `capabilities`, `secrets`, `limits` |
+| `tools` | Wasm tools: `name`, `wasm_path` or `oci_ref`, `oci_auth` (a secret holding registry credentials), `sha256`, `capabilities`, `secrets`, `limits` |
 | `upstreams` | External MCP servers to proxy, over stdio or Streamable HTTP |
 | `policy` | `default` (`deny`) and an ordered list of rules with `id`, `effect` and `tool` |
 | `audit` | Whether the audit log is enabled and where it is written |
@@ -97,7 +97,7 @@ The crate is not yet published to crates.io. Depend on it by path:
 tpt-mcpbox-config = { path = "../tpt-mcpbox-config" }
 ```
 
-The minimum supported Rust version is **1.85**.
+The minimum supported Rust version is **1.95**.
 
 ## Testing
 

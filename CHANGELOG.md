@@ -32,6 +32,53 @@ Release notes are generated from conventional commits by `release-plz` /
 - `docs/security-model.md` and `docs/integration.md`.
 - `fuzz/`: cargo-fuzz targets for the JSON-RPC parser, config loader and policy
   input, run for 60 s each in CI.
+- `tpt-mcpbox pull <REF>` fetches a tool module from an OCI registry into the
+  cache, loads it to confirm it is a tool component, and prints its digest for
+  pinning.
+- OCI module sources (`oci_ref`): anonymous pulls with bearer challenges,
+  redirects that never carry credentials, a content-addressed cache, digest and
+  size checks, and image index selection.
+- Private registry credentials through `oci_auth`, read from a secret.
+- Typed tool results: a tool can declare `result: envelope-v1` and return MCP
+  content blocks (text, image, embedded resource, resource link).
+- The SDK returns images, embedded resources and multi-block replies.
+- CI checks the licence policy in every workspace. The fuzz suite gains a
+  descriptor target and a Rego target.
+
+### Changed
+
+- TLS uses `rustls-rustcrypto`, a pure-Rust provider, in place of `ring`.
+- Outbound requests of Wasm tools are decided by the whole policy, using the
+  request's host and URI.
+- `paths` on a policy rule is refused when the configuration loads, because a
+  tool call never carries a path.
+- Rego is an in-crate interpreter for a documented subset of Rego v1, replacing
+  `regorus`. Unsupported forms are refused when the module loads.
+- `wasmtime` is 48.0.8. It was 34 at the start of this cycle, and the update
+  clears five advisories.
+- Embedded resources in MCP content follow the specification (the body sits
+  under `resource`).
+- The SDK's `ToolResult` holds content blocks. `ToolResult::as_text` returns
+  `String`; `text` and `json` are unchanged.
+
+### Removed
+
+- The `regorus` and `ring` dependencies, and the bare `Apache-2.0` licence
+  allowance.
+
+### Security
+
+- SR-01 is closed. The policy decides every outbound request of a Wasm tool, and
+  an allow rule's `hosts` constrain the tool to those hosts.
+- Tool network requests must resolve only to public addresses, and the
+  connection goes to the address that was checked.
+- Tool response bodies are capped at 16 MiB.
+- Registry credentials are sent only to the token endpoint, never to a redirect
+  target, and are never printed.
+- Guest tool descriptors are parsed strictly: unknown fields, empty names and
+  non-object schemas are refused.
+- Advisories against the `rustls-rustcrypto` alpha are accepted with reasons in
+  `deny.toml`, to be re-decided by 2027-02-09.
 
 ### Notes
 
