@@ -18,7 +18,6 @@ use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use serde::Deserialize;
 use serde_json::{Value, json};
 use tpt_mcpbox_audit::AuditLog;
 use tpt_mcpbox_config::Redactor;
@@ -182,10 +181,12 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
     tokio::task::spawn_blocking(move || startup_self_test(&probe))
         .await
         .map_err(|error| format!("startup self-test: {error}"))??;
+    let cache = tpt_mcpbox_runtime::oci::Cache::new(tpt_mcpbox_runtime::oci::default_cache_dir());
     for tool in config.tools.iter().filter(|t| t.enabled) {
         let loaded = Arc::new(
             runtime
-                .load_tool(tool, &secrets, base)
+                .load_tool_async(tool, &secrets, base, &cache)
+                .await
                 .map_err(|error| format!("tool `{}`: {error}", tool.name))?,
         );
         let descriptors = parse_descriptors(loaded.descriptors())
@@ -195,9 +196,9 @@ pub(crate) async fn build_router(config: &Config, base: &Path) -> Result<Hub, St
             "tool_loaded",
             json!({ "tool": tool.name, "digest": loaded.digest(), "tools": descriptors.len() }),
         )?;
-        for descriptor in descriptors {
+        for guest in descriptors {
             router
-                .add_wasm(Arc::clone(&loaded), descriptor)
+                .add_wasm(Arc::clone(&loaded), guest)
                 .map_err(|error| error.to_string())?;
         }
     }
@@ -868,29 +869,12 @@ fn globs(patterns: &[String], upstream: &str) -> Result<Option<GlobSet>, String>
         .map_err(|error| format!("upstream `{upstream}`: {error}"))
 }
 
-#[derive(Debug, Deserialize)]
-struct Descriptor {
-    name: String,
-    #[serde(default)]
-    description: Option<String>,
-    input_schema: Value,
-}
-
-/// Reads the descriptor array a Wasm component reports at load time.
-fn parse_descriptors(json: &str) -> Result<Vec<Tool>, String> {
-    let items: Vec<Descriptor> =
-        serde_json::from_str(json).map_err(|error| format!("invalid tool descriptors: {error}"))?;
-    Ok(items
-        .into_iter()
-        .map(|d| Tool {
-            name: d.name,
-            title: None,
-            description: d.description,
-            input_schema: d.input_schema,
-            output_schema: None,
-            annotations: None,
-        })
-        .collect())
+/// Reads the descriptor array a Wasm component reports at load time. The guest
+/// is untrusted, so the parse is strict: see
+/// [`tpt_mcpbox_protocol::tools::parse_descriptors`].
+fn parse_descriptors(json: &str) -> Result<Vec<tpt_mcpbox_protocol::tools::GuestTool>, String> {
+    tpt_mcpbox_protocol::tools::parse_descriptors(json)
+        .map_err(|error| format!("invalid tool descriptors: {error}"))
 }
 
 #[cfg(test)]
@@ -1068,9 +1052,9 @@ policy:
         )
         .unwrap();
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, "echo");
+        assert_eq!(tools[0].tool.name, "echo");
         assert_eq!(
-            tools[0].description.as_deref(),
+            tools[0].tool.description.as_deref(),
             Some("returns its arguments")
         );
     }

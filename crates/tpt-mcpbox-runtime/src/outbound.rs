@@ -19,11 +19,10 @@ use http::header::{HeaderMap, HeaderName, HeaderValue};
 use http::{Request, Response, Uri, uri::Scheme};
 use tpt_mcpbox_config::secrets::ResolvedHeader;
 use tpt_mcpbox_policy::normalize::normalize_host;
-use wasmtime_wasi_http::{
-    Error as HttpError, RequestOptions, WasiBody, WasiHttpHooks, default_send_request,
-};
+use wasmtime_wasi_http::{Error as HttpError, RequestOptions, WasiBody, WasiHttpHooks};
 
 use crate::error::ToolError;
+use crate::send;
 
 /// Headers that describe one hop and must not be forwarded (RFC 9110 §7.6.1),
 /// plus proxy credentials, which the proxy must never pass on from the guest.
@@ -42,6 +41,9 @@ const HOP_BY_HOP: &[&str] = &[
 /// Outbound request body ceiling when the tool does not set one.
 pub(crate) const DEFAULT_REQUEST_BYTES: u64 = 16 * 1024 * 1024;
 
+/// Response body ceiling for tool traffic. A reply over this is cut off.
+pub(crate) const DEFAULT_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+
 /// Per-tool outbound policy, built once when the tool is loaded.
 #[derive(Debug)]
 pub(crate) struct HttpPolicy {
@@ -50,11 +52,12 @@ pub(crate) struct HttpPolicy {
     injected: Vec<Injected>,
     time_limit: Duration,
     max_request_bytes: u64,
+    max_response_bytes: u64,
 }
 
 /// Per-call check run on each outbound request's normalised host, after the
 /// tool's own allowlist. `Err` carries the reason the request is refused.
-pub type HostCheck = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+pub type HostCheck = Arc<dyn Fn(&str, &str) -> Result<(), String> + Send + Sync>;
 
 /// A secret header and the hosts it may be sent to.
 #[derive(Debug)]
@@ -151,6 +154,7 @@ impl HttpPolicy {
             injected,
             time_limit,
             max_request_bytes: max_request_bytes.unwrap_or(DEFAULT_REQUEST_BYTES),
+            max_response_bytes: DEFAULT_RESPONSE_BYTES,
         })
     }
 
@@ -318,7 +322,7 @@ impl WasiHttpHooks for PolicyHooks {
         let uri = request.uri().clone();
         if let Some(check) = &self.check
             && let Some(host) = uri.host().and_then(normalize_host)
-            && let Err(reason) = check(&host)
+            && let Err(reason) = check(&host, &uri.to_string())
         {
             return Box::new(async move { Err(policy.error(&Refusal::Denied(reason))) });
         }
@@ -333,11 +337,11 @@ impl WasiHttpHooks for PolicyHooks {
         Box::new(async move {
             use http_body_util::BodyExt;
 
-            let (response, io) = default_send_request(request, Some(options)).await?;
-            Ok((
-                response.map(BodyExt::boxed_unsync),
-                Box::new(io) as Box<dyn Future<Output = _> + Send>,
-            ))
+            let egress = send::Egress::Tool {
+                max_response_bytes: policy.max_response_bytes,
+            };
+            let (response, io) = send::send_request(request, options, egress).await?;
+            Ok((response.map(BodyExt::boxed_unsync), Box::new(io) as Box<_>))
         })
     }
 }

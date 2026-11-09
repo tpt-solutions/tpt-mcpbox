@@ -354,3 +354,216 @@ mod tests {
         assert_eq!(json["annotations"]["readOnlyHint"], true);
     }
 }
+
+/// How a Wasm tool encodes its call result.
+///
+/// A tool that declares no format returns plain text, as before. A tool that
+/// declares `envelope-v1` returns a JSON object `{"content": [...], "isError": bool}`
+/// whose content blocks are MCP content, so it can return images and resources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultFormat {
+    /// The whole result is one text block.
+    Text,
+    /// A JSON envelope of MCP content blocks.
+    EnvelopeV1,
+}
+
+/// A tool a component reports, with the format of its call results.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GuestTool {
+    /// The tool's descriptor.
+    pub tool: Tool,
+    /// How its call results are encoded.
+    pub result: ResultFormat,
+}
+
+/// One tool as a Wasm component reports it: `name`, optional `description`, an
+/// `input_schema` object, and optional `result` format. Unknown fields are
+/// refused, so a guest cannot slip extra data past the host.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GuestDescriptor {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    input_schema: serde_json::Value,
+    #[serde(default)]
+    result: Option<String>,
+}
+
+/// Parses the JSON array of descriptors a Wasm component reports at load time.
+///
+/// The component is untrusted, so the input is treated as hostile: any
+/// malformed entry fails the whole parse, names must be non-empty, each
+/// `input_schema` must be a JSON object, and the result format must be one this
+/// host knows.
+///
+/// # Errors
+///
+/// Returns the JSON error for malformed input, or a message for an empty name, a
+/// non-object schema or an unknown result format.
+pub fn parse_descriptors(json: &str) -> Result<Vec<GuestTool>, String> {
+    let items: Vec<GuestDescriptor> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    items
+        .into_iter()
+        .map(|item| {
+            if item.name.is_empty() {
+                return Err("a tool has an empty name".to_owned());
+            }
+            if !item.input_schema.is_object() {
+                return Err(format!(
+                    "tool `{}` has a non-object input_schema",
+                    item.name
+                ));
+            }
+            let result = match item.result.as_deref() {
+                None | Some("text") => ResultFormat::Text,
+                Some("envelope-v1") => ResultFormat::EnvelopeV1,
+                Some(other) => {
+                    return Err(format!(
+                        "tool `{}` declares unknown result format `{other}`",
+                        item.name
+                    ));
+                }
+            };
+            Ok(GuestTool {
+                tool: Tool {
+                    name: item.name,
+                    title: None,
+                    description: item.description,
+                    input_schema: item.input_schema,
+                    output_schema: None,
+                    annotations: None,
+                },
+                result,
+            })
+        })
+        .collect()
+}
+
+/// The envelope a tool returns under [`ResultFormat::EnvelopeV1`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Envelope {
+    content: Vec<Content>,
+    #[serde(default, rename = "isError")]
+    is_error: bool,
+}
+
+/// Decodes a call result under `format`.
+///
+/// # Errors
+///
+/// Returns a message for an envelope that is not valid JSON of the expected
+/// shape, or that names a content type outside MCP. The message does not repeat
+/// the result, which may be large or sensitive.
+pub fn decode_result(format: ResultFormat, raw: &str) -> Result<CallToolResult, String> {
+    match format {
+        ResultFormat::Text => Ok(CallToolResult::text(raw)),
+        ResultFormat::EnvelopeV1 => {
+            // The serde message can echo the content, so it is not passed on.
+            let envelope: Envelope = serde_json::from_str(raw)
+                .map_err(|_| "the result is not a valid envelope".to_owned())?;
+            Ok(CallToolResult {
+                content: envelope.content,
+                structured_content: None,
+                is_error: Some(envelope.is_error),
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod descriptor_tests {
+    use super::parse_descriptors;
+
+    #[test]
+    fn well_formed_descriptors_parse() {
+        let tools = parse_descriptors(
+            r#"[{"name":"echo","description":"returns its arguments","input_schema":{"type":"object"}},
+                {"name":"plain","input_schema":{}}]"#,
+        )
+        .unwrap();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(
+            tools[0].tool.description.as_deref(),
+            Some("returns its arguments")
+        );
+        assert_eq!(tools[1].tool.description, None);
+    }
+
+    #[test]
+    fn one_bad_entry_fails_the_whole_list() {
+        let good = r#"{"name":"ok","input_schema":{}}"#;
+        for bad in [
+            r#"{"name":"","input_schema":{}}"#,
+            r#"{"name":"x","input_schema":null}"#,
+            r#"{"name":"x","input_schema":[]}"#,
+            r#"{"name":"x","input_schema":{},"extra":1}"#,
+            r#"{"input_schema":{}}"#,
+        ] {
+            let list = format!("[{good},{bad}]");
+            assert!(parse_descriptors(&list).is_err(), "accepted {bad}");
+        }
+    }
+
+    #[test]
+    fn non_array_input_is_refused() {
+        assert!(parse_descriptors("{}").is_err());
+        assert!(parse_descriptors("null").is_err());
+        assert!(parse_descriptors("").is_err());
+    }
+}
+
+#[cfg(test)]
+mod envelope_tests {
+    use super::{ResultFormat, decode_result};
+    use crate::content::Content;
+
+    #[test]
+    fn plain_text_results_are_one_text_block() {
+        let result = decode_result(ResultFormat::Text, "hello").unwrap();
+        assert_eq!(result.content, vec![Content::text("hello")]);
+        assert_eq!(result.is_error, Some(false));
+    }
+
+    #[test]
+    fn an_envelope_carries_mixed_content_blocks() {
+        let raw = r#"{"content":[
+            {"type":"text","text":"done"},
+            {"type":"image","data":"aGk=","mimeType":"image/png"},
+            {"type":"resource","resource":{"uri":"file:///a","mimeType":"text/plain","text":"x"}}
+        ]}"#;
+        let result = decode_result(ResultFormat::EnvelopeV1, raw).unwrap();
+        assert_eq!(result.content.len(), 3);
+        assert_eq!(result.is_error, Some(false));
+    }
+
+    #[test]
+    fn an_envelope_can_report_a_tool_failure() {
+        let raw = r#"{"content":[{"type":"text","text":"no such file"}],"isError":true}"#;
+        assert_eq!(
+            decode_result(ResultFormat::EnvelopeV1, raw)
+                .unwrap()
+                .is_error,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn malformed_envelopes_are_refused_without_echoing_them() {
+        for raw in [
+            "not json",
+            r#"{"content":"text"}"#,
+            r#"{"content":[{"type":"bogus","text":"x"}]}"#,
+            r#"{"content":[],"extra":1}"#,
+            r#"{"isError":false}"#,
+        ] {
+            let error = decode_result(ResultFormat::EnvelopeV1, raw).expect_err(raw);
+            assert!(
+                !error.contains("bogus") && !error.contains("extra"),
+                "{error}"
+            );
+        }
+    }
+}

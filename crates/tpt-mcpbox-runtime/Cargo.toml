@@ -26,8 +26,16 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 minisign-verify = "0.1"
 hex = { workspace = true }
-hyper = "1"
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+bytes = "1"
+base64 = "0.22"
+http-body = "1"
 http-body-util = "0.1"
+rustls = { workspace = true }
+rustls-rustcrypto = { workspace = true }
+tokio-rustls = { workspace = true }
+webpki-roots = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -37,6 +45,7 @@ wasmtime-wasi-http = { workspace = true }
 wasmtime-wasi-io = { workspace = true }
 
 [dev-dependencies]
+axum = { workspace = true }
 criterion = { workspace = true }
 tempfile = { workspace = true }
 minisign = "0.7"

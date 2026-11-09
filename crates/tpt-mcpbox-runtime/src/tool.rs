@@ -227,7 +227,8 @@ impl Runtime {
         let name = config.name.as_str();
         let Some(relative) = config.wasm_path.as_deref() else {
             let message = if config.oci_ref.is_some() {
-                "OCI pulls are not implemented yet; set `wasm_path` to a local component".to_owned()
+                "an OCI module is loaded with `load_tool_async`, which pulls it into the cache"
+                    .to_owned()
             } else {
                 "no `wasm_path` is set".to_owned()
             };
@@ -244,6 +245,77 @@ impl Runtime {
             config.minisign_key.as_deref(),
         )?;
         self.build_tool(name, &module.bytes, &module.digest, config, secrets, base)
+    }
+
+    /// Load a tool from its configuration, pulling an `oci_ref` module into
+    /// `cache` when it is not already there.
+    ///
+    /// A local `wasm_path` loads exactly as [`Runtime::load_tool`] does. An OCI
+    /// module is checked against `sha256` and its reference digest, if set. A
+    /// module with neither pin loads with a warning that prints its digest.
+    /// `minisign_key` is refused for OCI modules, because the signature has no
+    /// file to sit beside.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolError::ModuleFetch`] when the registry cannot supply a
+    /// module that passes the pins, and the usual load errors otherwise.
+    pub async fn load_tool_async(
+        &self,
+        config: &ToolConfig,
+        secrets: &SecretStore,
+        base: &Path,
+        cache: &crate::oci::Cache,
+    ) -> Result<LoadedTool, ToolError> {
+        let Some(reference) = config.oci_ref.as_deref() else {
+            return self.load_tool(config, secrets, base);
+        };
+        let name = config.name.as_str();
+        if config.minisign_key.is_some() {
+            return Err(ToolError::Unsupported {
+                tool: name.to_owned(),
+                message: "minisign signatures are not supported for OCI modules;                           pin with `sha256`, or load a local `wasm_path` to verify a signature"
+                    .to_owned(),
+            });
+        }
+        if config.sha256.is_none() && !reference.contains("@sha256:") {
+            tracing::warn!(
+                tool = name,
+                reference,
+                "OCI module is not pinned: a tag can move; add `sha256` or a digest reference"
+            );
+        }
+        let credentials = match &config.oci_auth {
+            Some(auth) => Some(
+                secrets
+                    .get(&auth.secret)
+                    .ok_or_else(|| ToolError::ModuleFetch {
+                        tool: name.to_owned(),
+                        message: format!("the registry secret `{}` is not set", auth.secret),
+                    })?
+                    .expose(),
+            ),
+            None => None,
+        };
+        let pulled = crate::oci::fetch_module_with_auth(
+            reference,
+            cache,
+            config.sha256.as_deref(),
+            credentials,
+        )
+        .await
+        .map_err(|error| ToolError::ModuleFetch {
+            tool: name.to_owned(),
+            message: error.to_string(),
+        })?;
+        tracing::info!(
+            tool = name,
+            reference = %pulled.reference,
+            digest = %pulled.sha256,
+            from_cache = pulled.from_cache,
+            "OCI module ready"
+        );
+        self.build_tool(name, &pulled.bytes, &pulled.sha256, config, secrets, base)
     }
 
     /// Run the sandbox self-test against a probe component.
@@ -263,6 +335,7 @@ impl Runtime {
             description: None,
             wasm_path: None,
             oci_ref: None,
+            oci_auth: None,
             sha256: None,
             minisign_key: None,
             enabled: true,

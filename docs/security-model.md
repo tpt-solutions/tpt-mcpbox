@@ -54,8 +54,17 @@ for `rm -rf /`, the hub will honour it.
   checked for traversal, and URIs are normalised before comparison. A value
   that cannot be normalised is matched by every deny rule that names its field
   and by no allow rule, and Rego refuses the request outright.
-- **Gap:** the hub does not yet fill in the host or path of a call, so `hosts`
-  and `paths` rules do not fire (SR-01 in [security-review.md](security-review.md)).
+- **Outbound requests are decided by the whole policy.** Each request a Wasm
+  tool makes is checked with its host and URI, through the same DSL, Rego and
+  default as the call itself. An allow rule's `hosts` therefore limits where the
+  tool may go, and a deny rule refuses the hosts it names. The check does not
+  spend quota. `paths` is refused when the configuration loads, because a tool
+  call never carries a filesystem path (SR-01 in
+  [security-review.md](security-review.md)).
+- **Tool results** are plain text unless the tool declares the `envelope-v1`
+  format, in which case the result must be a valid envelope of MCP content
+  blocks. A malformed envelope fails the call, and its message does not repeat
+  the result.
 
 ### 3.2 Wasm sandbox
 
@@ -150,17 +159,17 @@ v0.1.0.
 
 | ID | Risk | Status |
 |----|------|--------|
-| R1 | Response bodies from `wasi:http` are not size-capped; the outbound future does not expose the body stream. A tool can make the host buffer an arbitrarily large response. | Open |
-| R2 | DNS rebinding and private-address (SSRF) checks are not done. An allowlisted name that resolves to a private or link-local address is not blocked. | Open |
+| R1 | Response bodies from tool `wasi:http` calls are capped at 16 MiB; a larger reply is cut off with an error. Request bodies were already capped. The cap is fixed, not configurable yet. | Mitigated (fixed cap) |
+| R2 | For tool traffic, every address a name resolves to must be public, and the connection goes to the address that was checked, so DNS rebinding between check and connect cannot reach an internal host. Registry pulls are operator-chosen and not checked. | Mitigated for tool traffic |
 | R3 | Guest memory persists across calls within one recycle window. `recycle_after` is fixed at 256 and not yet configurable. | Partly mitigated |
 | R4 | A filesystem grant preopens its fixed directory. A grant of `workspace/*.md` exposes all of `workspace/` to the guest, and a write grant of `workspace/*.log` makes all of `workspace/` writable. | Accepted, documented |
 | R5 | Signature verification is opt-in with minisign (`minisign_key`); `sigstore` is not implemented. Without a key, SHA-256 pinning is the only integrity check, and unpinned modules load with a warning. | Open (minisign opt-in) |
-| R6 | OCI pulls are refused (`ToolError::Unsupported`), so there is no supply-chain path to audit yet. | Open (feature gap) |
+| R6 | OCI pulls are anonymous only: there are no credentials for private registries, and minisign signatures are refused for OCI modules. A tool with a tag and no `sha256` loads whatever the tag points at, with a warning. Manifests and blobs are checked against their digests, and cached entries are re-hashed on read. | Partly mitigated |
 | R7 | Upstream responses are scanned only against the per-upstream `scan` rules an operator writes, and prompts are not scanned. Known secret values are redacted. | Partly mitigated |
 | R8 | Client-side rate-limit state is never evicted, so memory grows with the number of distinct session ids. | Open |
 | R9 | With `audit.key_env`, each append also writes a keyed head checkpoint (`<log>.head`), so removing the newest entries, or the whole log, is detected. Replaying an older log and checkpoint together is not, and neither is deleting both. Without a key the chain is unkeyed and rebuildable, and truncation is not detected. | Open (keyed checkpoint is opt-in) |
 | R10 | Only one shared bearer token exists. There is no per-client token and no rotation without restart. | Open |
-| R11 | Fuzz targets cover the JSON-RPC parser, config parser and policy input, and run weekly in CI. The WIT boundary has no target yet. | Partly mitigated |
+| R11 | Fuzz targets cover the JSON-RPC parser, config parser, policy input and the guest's tool descriptors (the load-time WIT boundary), and run weekly in CI. Guest call results are opaque bytes capped by size and are not parsed by the host. | Partly mitigated |
 
 The internal review in [security-review.md](security-review.md) lists further
 findings (SR-01 to SR-26) with severity and status.

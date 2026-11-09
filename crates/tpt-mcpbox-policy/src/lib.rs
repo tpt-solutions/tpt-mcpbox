@@ -4,7 +4,8 @@
 //! Capability-based policy engine for tpt-mcpbox (Phase 3).
 //!
 //! Two evaluators compose into one [`Policy`]: a simplified YAML DSL and an
-//! embedded Rego module evaluated with `regorus`. Evaluation is deny-by-default,
+//! embedded Rego module evaluated by the in-crate Rego subset interpreter.
+//! Evaluation is deny-by-default,
 //! and every decision carries a reason and a rule id so the audit log can explain
 //! *why* a call was blocked. See [`Policy`] for how the two are combined.
 

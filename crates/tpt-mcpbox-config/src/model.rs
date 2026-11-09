@@ -137,6 +137,9 @@ pub struct ToolConfig {
     /// `oci://ghcr.io/tpt-solutions/mcpbox-fs:1.0`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oci_ref: Option<String>,
+    /// Credentials for a private `oci_ref` registry. Requires `oci_ref`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oci_auth: Option<OciAuth>,
     /// Expected SHA-256 of the component; required once publishing starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
@@ -173,6 +176,16 @@ impl ToolConfig {
             "<unset>".to_owned()
         }
     }
+}
+
+/// Credentials for a private OCI registry, read from a secret so the password
+/// is never written in the configuration file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OciAuth {
+    /// Name of the secret (an environment variable, or an entry in the `.env`
+    /// file) whose value is `username:password`.
+    pub secret: String,
 }
 
 /// Serde default for `enabled` fields: a configured entry is enabled unless it

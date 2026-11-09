@@ -253,6 +253,14 @@ fn validate_tools(config: &Config, mode: ValidationMode, report: &mut Validation
             ));
         }
 
+        if tool.oci_auth.is_some() && tool.oci_ref.is_none() {
+            report.diagnostics.push(Diagnostic::error_with_hint(
+                format!("{path}.oci_auth"),
+                format!("tool `{}` sets oci_auth without oci_ref", tool.name),
+                "credentials only apply to registry pulls; remove oci_auth or set oci_ref",
+            ));
+        }
+
         match (&tool.wasm_path, &tool.oci_ref) {
             (None, None) => report.diagnostics.push(Diagnostic::error_with_hint(
                 format!("{path}.wasm_path"),
@@ -639,10 +647,9 @@ fn validate_policy(config: &Config, mode: ValidationMode, report: &mut Validatio
                 "rule ids are recorded in audit entries and must be unique",
             ));
         }
-        // The policy is not given a call's filesystem path, so a deny rule on
-        // `paths` never matches (SR-01). Say so rather than let an operator rely
-        // on it. `hosts` on a deny rule is checked only on the outbound requests
-        // of Wasm tools, not on upstream calls.
+        // The policy is not given a call's filesystem path, so a rule on `paths`
+        // would never match; that is refused (SR-01). `hosts` constrains the
+        // outbound requests of Wasm tools.
         // A deny that matches only on arguments is compared by exact JSON
         // equality, so `"Write"` or `1.0` steps around it (SR-16).
         let only_args = !rule.args.is_empty()
@@ -659,16 +666,11 @@ fn validate_policy(config: &Config, mode: ValidationMode, report: &mut Validatio
                 "a deny rule that matches only on `args` compares values exactly; spellings such as `Write` for `write` pass it. Also name the tool",
             ));
         }
-        if rule.effect == Effect::Deny && !rule.paths.is_empty() {
-            report.diagnostics.push(Diagnostic::warning(
-                &path,
-                "`paths` on a deny rule is not enforced yet; the policy is not given the call's path",
-            ));
-        }
-        if rule.effect == Effect::Deny && !rule.hosts.is_empty() {
-            report.diagnostics.push(Diagnostic::warning(
-                &path,
-                "`hosts` on a deny rule applies only to outbound requests of Wasm tools; upstream calls are not host-checked",
+        if !rule.paths.is_empty() {
+            report.diagnostics.push(Diagnostic::error_with_hint(
+                format!("{path}.paths"),
+                format!("rule `{}` matches on `paths`, which a tool call never supplies", rule.id),
+                "filesystem access is limited by the tool's `capabilities.filesystem` grants; remove `paths` from the rule",
             ));
         }
         if let Some(constraints) = &rule.constraints {
@@ -993,7 +995,7 @@ audit:
     }
 
     #[test]
-    fn deny_rules_on_paths_draw_a_warning() {
+    fn rules_on_paths_are_refused() {
         let config = parse(
             "policy:
   rules:
@@ -1002,10 +1004,8 @@ audit:
       paths: [\"**/.env\"]
 ",
         );
-        let report = validate(&config, ValidationMode::Serve);
-        let warnings = policy_warnings(&report);
-        assert_eq!(warnings.len(), 1, "{report}");
-        assert_eq!(warnings[0].path, "policy.rules[0]");
+        let found = errors(&config);
+        assert!(found.iter().any(|e| e.contains("paths")), "{found:?}");
     }
 
     #[test]
@@ -1025,7 +1025,7 @@ audit:
     }
 
     #[test]
-    fn deny_rules_on_hosts_say_where_they_apply() {
+    fn deny_rules_on_hosts_are_enforced_without_a_warning() {
         let config = parse(
             "policy:
   rules:
@@ -1034,10 +1034,9 @@ audit:
       hosts: [\"*.evil.test\"]
 ",
         );
+        // `hosts` is checked on every outbound request of a Wasm tool (SR-01).
         let report = validate(&config, ValidationMode::Serve);
-        let warnings = policy_warnings(&report);
-        assert_eq!(warnings.len(), 1, "{report}");
-        assert!(warnings[0].message.contains("Wasm tools"));
+        assert!(policy_warnings(&report).is_empty(), "{report}");
     }
 
     #[test]

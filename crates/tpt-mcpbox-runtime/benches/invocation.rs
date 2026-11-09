@@ -47,6 +47,7 @@ fn bench_warm_invocation(c: &mut Criterion) {
         description: None,
         wasm_path: Some(guest_path()),
         oci_ref: None,
+        oci_auth: None,
         sha256: None,
         minisign_key: None,
         enabled: true,

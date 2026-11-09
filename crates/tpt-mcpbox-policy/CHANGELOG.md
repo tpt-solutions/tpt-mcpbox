@@ -9,8 +9,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - YAML DSL policy evaluator (`Engine`) with host and path normalisation.
-- Embedded Rego evaluation through `regorus`, composed with the DSL into a
-  single `Policy`.
+- Embedded Rego evaluation, composed with the DSL into a single `Policy`. The
+  evaluator is an in-crate interpreter for a documented subset of Rego v1; it
+  replaces the earlier `regorus` engine, so the crate has no third-party Rego
+  implementation.
 - `PolicyInput` with caller and URI inputs, and quota checks.
 - `Decision` with a reason and a rule id, plus dry-run reporting through
   `would_be`.

@@ -16,7 +16,7 @@ list of known findings instead of rediscovering them.
   configuration (`tpt-mcpbox-policy`, `tpt-mcpbox-config`) were covered. No
   dynamic testing beyond the existing test suite was done, and the fuzz
   targets were not run locally.
-- **Out of scope:** wasmtime, regorus and other dependencies, except where the
+- **Out of scope:** wasmtime and other dependencies, except where the
   code relies on a specific behaviour of theirs. The guest SDK and the example
   tools.
 

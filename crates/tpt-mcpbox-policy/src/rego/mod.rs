@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) TPT Solutions
 
-//! The embedded Rego evaluator, backed by `regorus`.
+//! The embedded Rego evaluator: an in-house interpreter for a documented subset
+//! of Rego v1 (see [`parse`] for the subset). It replaces the `regorus` engine,
+//! so the policy engine carries no third-party Rego implementation.
 //!
 //! A Rego module is a complete policy, so it is always consulted when configured
 //! and never yields "no opinion". The module contract is:
@@ -12,26 +14,28 @@
 //!   serialised as JSON.
 //!
 //! Any evaluation error (a runtime type error, an undefined `allow`) is treated
-//! as a refusal. A broken module therefore fails closed.
+//! as a refusal, and anything outside the subset is refused when the module
+//! loads. A broken module therefore fails closed.
 //!
 //! The module sees the same normalised host, path and URIs as the DSL, so a
 //! check written against `api.github.com` or `secret/` cannot be stepped around
 //! with `API.GitHub.com.` or `x/../secret/`. A request whose host, path or URI
 //! cannot be normalised is refused before the module runs.
 
+mod builtins;
+mod eval;
+mod lex;
+mod parse;
+
 use std::path::Path;
-use std::sync::{Mutex, PoisonError};
 
 use crate::decision::PolicyInput;
 use crate::error::PolicyError;
 use crate::normalize::{normalize_host, normalize_path, normalize_uri};
 
-/// The query whose boolean value decides a request.
-const ALLOW_QUERY: &str = "data.tpt.mcpbox.allow";
-
 /// A compiled Rego module, ready to evaluate.
 pub(crate) struct RegoEngine {
-    engine: Mutex<regorus::Engine>,
+    module: parse::Module,
 }
 
 impl std::fmt::Debug for RegoEngine {
@@ -52,20 +56,11 @@ impl RegoEngine {
 
     /// Compile a module from source. `name` is used only in diagnostics.
     pub(crate) fn from_source(name: &str, source: String) -> Result<Self, PolicyError> {
-        let mut engine = regorus::Engine::new();
-        register_normalisers(&mut engine).map_err(|error| PolicyError::RegoCompile {
+        let module = parse::compile(&source).map_err(|message| PolicyError::RegoCompile {
             module: name.to_owned(),
-            message: error.to_string(),
+            message,
         })?;
-        engine
-            .add_policy(name.to_owned(), source)
-            .map_err(|error| PolicyError::RegoCompile {
-                module: name.to_owned(),
-                message: error.to_string(),
-            })?;
-        Ok(Self {
-            engine: Mutex::new(engine),
-        })
+        Ok(Self { module })
     }
 
     /// Ask the module whether `input` is allowed.
@@ -74,66 +69,9 @@ impl RegoEngine {
     /// that as a refusal.
     pub(crate) fn allows(&self, input: &PolicyInput) -> Result<bool, String> {
         let input = normalized(input)?;
-        let json = serde_json::to_string(&input).map_err(|error| error.to_string())?;
-        let mut engine = self.engine.lock().unwrap_or_else(PoisonError::into_inner);
-        engine
-            .set_input_json(&json)
-            .map_err(|error| error.to_string())?;
-        engine
-            .eval_bool_query(ALLOW_QUERY.to_owned(), false)
-            .map_err(|error| error.to_string())
+        let value = serde_json::to_value(&input).map_err(|error| error.to_string())?;
+        eval::allows(&self.module, &value)
     }
-}
-
-/// Registers the builtins a module can call to normalise a raw value the way
-/// the DSL normalises fields: `tpt.normalize_host`, `tpt.normalize_path` and
-/// `tpt.normalize_uri`. Arguments are untrusted, so a module that compares one
-/// should normalise it first.
-///
-/// A value that cannot be normalised is undefined rather than an error, so an
-/// expression comparing it is false and an allow rule built on it does not
-/// fire. Refusals stay fail-closed.
-fn register_normalisers(engine: &mut regorus::Engine) -> anyhow::Result<()> {
-    engine.add_extension(
-        "tpt.normalize_host".to_owned(),
-        1,
-        Box::new(
-            |args: Vec<regorus::Value>| -> anyhow::Result<regorus::Value> {
-                Ok(normalise_argument(&args, normalize_host))
-            },
-        ),
-    )?;
-    engine.add_extension(
-        "tpt.normalize_path".to_owned(),
-        1,
-        Box::new(
-            |args: Vec<regorus::Value>| -> anyhow::Result<regorus::Value> {
-                Ok(normalise_argument(&args, normalize_path))
-            },
-        ),
-    )?;
-    engine.add_extension(
-        "tpt.normalize_uri".to_owned(),
-        1,
-        Box::new(
-            |args: Vec<regorus::Value>| -> anyhow::Result<regorus::Value> {
-                Ok(normalise_argument(&args, normalize_uri))
-            },
-        ),
-    )?;
-    Ok(())
-}
-
-/// The normalised first argument, or undefined when it is not a string or
-/// cannot be normalised.
-fn normalise_argument(
-    args: &[regorus::Value],
-    normalise: fn(&str) -> Option<String>,
-) -> regorus::Value {
-    args.first()
-        .and_then(|arg| arg.as_string().ok())
-        .and_then(|text| normalise(text))
-        .map_or(regorus::Value::Undefined, regorus::Value::from)
 }
 
 /// The input with its host, path and URIs normalised as the DSL sees them.
@@ -161,4 +99,28 @@ fn normalized(input: &PolicyInput) -> Result<PolicyInput, String> {
         uris,
         ..input.clone()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RegoEngine;
+    use crate::decision::PolicyInput;
+
+    /// Every prefix of a valid module is compiled and, if it compiles, evaluated.
+    /// None may panic: truncated text is what a broken edit looks like.
+    #[test]
+    fn truncated_modules_never_panic() {
+        const MODULE: &str = "package tpt.mcpbox\n\ndefault allow := false\n\nhelper if {\n    input.uris[_] == \"file:///a\"\n}\n\nallow if {\n    some u in input.uris\n    not startswith(u, \"x\")\n    count(input.arguments) > 0\n    helper\n}\n";
+        let input = PolicyInput {
+            tool: Some("t".to_owned()),
+            uris: vec!["file:///a".to_owned()],
+            arguments: serde_json::json!({"k": [1, "two"]}),
+            ..PolicyInput::default()
+        };
+        for end in 0..=MODULE.len() {
+            if let Ok(engine) = RegoEngine::from_source("prefix.rego", MODULE[..end].to_owned()) {
+                let _ = engine.allows(&input);
+            }
+        }
+    }
 }

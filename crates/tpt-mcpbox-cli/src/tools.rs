@@ -110,9 +110,22 @@ fn json_kind(value: &Value) -> &'static str {
 }
 
 /// Turn a tool result into the text printed to the terminal.
+/// The text blocks of a result, one per line; other blocks as compact JSON.
+fn render_blocks(result: &tpt_mcpbox_protocol::CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .map(|block| match block {
+            tpt_mcpbox_protocol::content::Content::Text(text) => text.text.clone(),
+            other => serde_json::to_string(other).unwrap_or_default(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn render(output: &ToolOutput) -> Result<String, String> {
     match output {
-        ToolOutput::Wasm(text) => Ok(text.clone()),
+        ToolOutput::Wasm(result) => Ok(render_blocks(result)),
         ToolOutput::Upstream(result) => serde_json::to_string_pretty(result)
             .map_err(|error| format!("cannot render the result: {error}")),
     }
@@ -135,7 +148,7 @@ mod tests {
 
     #[test]
     fn wasm_output_is_printed_verbatim() {
-        let out = ToolOutput::Wasm("Hello, Ada!".to_owned());
+        let out = ToolOutput::Wasm(tpt_mcpbox_protocol::CallToolResult::text("Hello, Ada!"));
         assert_eq!(render(&out).unwrap(), "Hello, Ada!");
     }
 }

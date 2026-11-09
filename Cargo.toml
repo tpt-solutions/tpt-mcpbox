@@ -45,11 +45,19 @@ clap_mangen = "0.3"
 futures = "0.3"
 globset = "0.4"
 http = "1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+# TLS uses a pure-Rust crypto provider; `ring` is not allowed (see todo.md, Phase 13).
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "logging"] }
+rustls-rustcrypto = "0.0.2-alpha"
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "logging"] }
+webpki-roots = "1"
 wasmtime = { version = "48", default-features = false, features = ["cranelift", "component-model", "wat", "std", "runtime", "pooling-allocator", "async"] }
 wasmtime-wasi = "48"
-wasmtime-wasi-http = "48"
+# No default send path: it pulls in tokio-rustls with `ring`. The runtime sends
+# requests itself (crates/tpt-mcpbox-runtime/src/send.rs).
+wasmtime-wasi-http = { version = "48", default-features = false, features = ["p2"] }
 wasmtime-wasi-io = "48"
-regorus = { version = "0.13", default-features = false, features = ["arc"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 schemars = { version = "1", features = ["derive"] }

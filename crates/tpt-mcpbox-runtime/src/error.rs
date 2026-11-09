@@ -62,6 +62,15 @@ pub enum ToolError {
         message: String,
     },
 
+    /// The module could not be fetched from its OCI registry or verified there.
+    #[error("tool `{tool}`: cannot fetch module: {message}")]
+    ModuleFetch {
+        /// Tool name.
+        tool: String,
+        /// Why the fetch or the digest check failed.
+        message: String,
+    },
+
     /// The bytes are not a valid WebAssembly component, or they do not
     /// implement the `tpt:mcpbox/tool` world.
     #[error("tool `{tool}` cannot be compiled or instantiated: {message}")]

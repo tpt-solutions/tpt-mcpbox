@@ -212,7 +212,7 @@ impl ToolHandler {
 
         let result = match outcome {
             Ok(ToolOutput::Upstream(result)) => result,
-            Ok(ToolOutput::Wasm(text)) => CallToolResult::text(text),
+            Ok(ToolOutput::Wasm(result)) => result,
             Err(RouterError::UnknownTool(name)) => {
                 return self.failure(
                     id,

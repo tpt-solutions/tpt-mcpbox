@@ -24,10 +24,13 @@
 mod bindings;
 mod error;
 mod module;
+pub mod oci;
 mod outbound;
 mod probe;
 mod runtime;
 mod sandbox;
+mod send;
+mod tls;
 mod tool;
 
 pub use error::ToolError;

@@ -49,13 +49,13 @@ fixes are in progress. See [todo.md](todo.md) for the full checklist.
 | 1 | MCP protocol core (`tpt-mcpbox-protocol`) | done |
 | 2 | Configuration & secrets (`tpt-mcpbox-config`) | largely done; reload of tools and upstreams open |
 | 3 | Policy engine (`tpt-mcpbox-policy`) | largely done; policy edits apply to a running hub |
-| 4 | Wasm runtime (`tpt-mcpbox-runtime`) | largely done; OCI module pull open |
+| 4 | Wasm runtime (`tpt-mcpbox-runtime`) | largely done; anonymous OCI pull done, authenticated pulls open |
 | 5 | Router & rate limiter (`tpt-mcpbox-router`) | largely done |
 | 6 | Passthrough proxy (`tpt-mcpbox-proxy`) | largely done |
 | 7 | Guest tool SDK (`tpt-mcpbox-sdk`) | largely done |
 | 8 | Example tools (`tools/`) | largely done; release assets open |
 | 9 | Observability (`tpt-mcpbox-audit`) | largely done |
-| 10 | CLI (`tpt-mcpbox-cli`) | largely done; `pull` open |
+| 10 | CLI (`tpt-mcpbox-cli`) | largely done; `pull` done |
 | 11 | Security hardening & review | in progress |
 | 12 | Documentation & release | in progress; crates.io and tagged release open |
 

@@ -37,33 +37,34 @@ policy:
       method: tools/call
       args:
         operation: read
-      paths: ["./workspace/**"]
       caller: "agent-*"
       constraints:
         quota:
           max_calls: 30
           window: 1m
 
-    - id: deny-secrets
+    - id: deny-evil-hosts
       effect: deny
-      paths: ["**/.env", "**/*.pem"]
+      tool: github_search
+      hosts: ["*.evil.test"]
 ```
 
 Matching rules:
 
 - `tool`, `prompt`, `method`, `caller`: exact or glob. A `prompt` rule never
   matches a tool call, and a `tool` rule never matches a prompt.
-- `hosts` on a deny rule is checked on each outbound request a Wasm tool makes,
-  and refuses that request when the rule names its host. Upstream calls are not
-  host-checked. Allow rules with `hosts` never match, since a call has no host
-  when it is admitted.
-- `paths` on a deny rule is not enforced yet: the policy is not given the path
-  of a call, so such a rule never matches. The loader warns about it. See the
+- `hosts` applies to each outbound request a Wasm tool makes, as well as to the
+  call itself. The whole policy is consulted for each request, so an allow rule
+  that names hosts admits the tool only for those hosts, and a deny rule refuses
+  the hosts it names. A request that no rule admits is refused by the default.
+  Upstream calls are not host-checked, because their destination is the
+  configured upstream.
+- `paths` is refused by the loader. A tool call never carries a filesystem path
+  for the policy to match, so the rule would never apply. Limit filesystem
+  access with the tool's `capabilities.filesystem` grants instead. See the
   security review, SR-01.
 - `hosts`: glob, case-insensitive, after normalisation. Look-alike Unicode
   hosts are normalised before matching.
-- `paths`: glob, applied to the normalised path. Traversal such as `..` does not
-  escape a match.
 - `uris`: glob, applied to normalised URIs.
 - `args`: each key must equal the given value, by exact JSON equality. `"Write"`
   is not `"write"`, `1.0` is not `1`, and a missing key never matches. A deny that
@@ -114,6 +115,32 @@ allow if {
     tpt.normalize_path(input.arguments.path) == "/srv/workspace/notes.txt"
 }
 ```
+
+The evaluator is an in-house interpreter for a subset of Rego v1, not a full
+Rego engine. The subset:
+
+- `package tpt.mcpbox`; `import rego.v1` and `import future.keywords...` are
+  accepted and ignored;
+- `default allow := true|false`, and boolean rules written `NAME if { ... }`,
+  `NAME if EXPR` or `NAME { ... }`, with several definitions allowed;
+- statements that run in the order written, separated by newlines or `;`:
+  `not`, comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`), `=` and `:=` (which bind
+  an unbound variable), `in`, and `some NAME in COLLECTION`;
+- values: strings, numbers, `true`, `false`, `null`, arrays, `input`,
+  `data.tpt.mcpbox.RULE` (another rule of this module), variables, `_`, and
+  bracket indexing such as `input.uris[_]`;
+- builtins: `startswith`, `endswith`, `contains`, `lower`, `upper`, `count`,
+  `is_string`, `is_number`, `is_boolean`, `is_array`, `is_object`, `is_null`,
+  and the `tpt.normalize_host`, `tpt.normalize_path` and `tpt.normalize_uri`
+  normalisers.
+
+Anything else is refused when the module loads, with the line that caused it:
+arithmetic, `else`, `with`, functions with arguments, comprehensions, regular
+expressions, and most of the standard library. A variable must be bound by an
+earlier statement, so write `x := input.tool` before `x == "read"`. Rules may not
+refer to each other in a cycle. A comparison of different types is false, a
+type error in a builtin is an error (a refusal), and the evaluation has a step
+budget, so a module cannot run unbounded.
 
 A DSL deny always wins over Rego. An error in the module, or an undefined
 `allow`, counts as a refusal. Rego is not only a filter, though: when no DSL

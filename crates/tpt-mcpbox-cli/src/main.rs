@@ -81,6 +81,22 @@ enum Command {
         #[command(subcommand)]
         command: ToolsCommand,
     },
+    /// Fetch a tool module from an OCI registry into the cache, verify it, and
+    /// report its digest for pinning.
+    Pull {
+        /// OCI reference, e.g. `oci://ghcr.io/org/tool:1.0`. A digest form
+        /// (`@sha256:...`) pins the manifest.
+        #[arg(value_name = "REF")]
+        reference: String,
+        /// Cache directory; defaults to `MCPBOX_CACHE_DIR`, then the platform
+        /// cache directory.
+        #[arg(long, value_name = "DIR")]
+        cache_dir: Option<PathBuf>,
+        /// Environment variable holding `username:password` for a private
+        /// registry. The value is never printed.
+        #[arg(long, value_name = "NAME")]
+        auth_env: Option<String>,
+    },
     /// Policy commands.
     Policy {
         /// Policy subcommand to run.
@@ -236,6 +252,11 @@ fn main() -> ExitCode {
         Command::Tools {
             command: ToolsCommand::Call { name, args, config },
         } => tools::call_command(config.as_deref(), &name, args.as_deref()),
+        Command::Pull {
+            reference,
+            cache_dir,
+            auth_env,
+        } => pull_command(&reference, cache_dir, auth_env.as_deref()),
         Command::Completions { shell } => {
             let mut command = Cli::command();
             clap_complete::generate(shell, &mut command, "tpt-mcpbox", &mut std::io::stdout());
@@ -457,6 +478,71 @@ fn apply_run_overrides(
 }
 
 /// Write `tpt-mcpbox.1` and one page per subcommand, e.g. `tpt-mcpbox-tools-ls.1`.
+/// `tpt-mcpbox pull`: fetch the module, then load it through the same loader
+/// `run` uses, so a module that is not a tool component is caught here.
+fn pull_command(
+    reference: &str,
+    cache_dir: Option<PathBuf>,
+    auth_env: Option<&str>,
+) -> Result<ExitCode, String> {
+    use tpt_mcpbox_config::{Capabilities, Limits, RateLimit, SecretStore, ToolConfig};
+    use tpt_mcpbox_runtime::Runtime;
+    use tpt_mcpbox_runtime::oci::{self, Cache};
+
+    let cache = Cache::new(cache_dir.unwrap_or_else(oci::default_cache_dir));
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("cannot start the async runtime: {error}"))?;
+    runtime.block_on(async {
+        let credentials = auth_env
+            .map(|name| {
+                std::env::var(name).map_err(|_| format!("environment variable `{name}` is not set"))
+            })
+            .transpose()?;
+        let pulled = oci::fetch_module_with_auth(reference, &cache, None, credentials.as_deref())
+            .await
+            .map_err(|error| error.to_string())?;
+
+        // Load it pinned to the digest just fetched: the cache serves it, and the
+        // loader confirms it is a tool component that implements the world.
+        let config = ToolConfig {
+            name: "pull".to_owned(),
+            description: None,
+            wasm_path: None,
+            oci_ref: Some(reference.to_owned()),
+            oci_auth: None,
+            sha256: Some(pulled.sha256.clone()),
+            minisign_key: None,
+            enabled: true,
+            capabilities: Capabilities::default(),
+            secrets: Vec::new(),
+            limits: Limits::default(),
+            rate_limit: RateLimit::default(),
+        };
+        let runtime = Runtime::new().map_err(|error| error.to_string())?;
+        runtime
+            .load_tool_async(&config, &SecretStore::new(), Path::new("."), &cache)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        println!("pulled {}", pulled.reference);
+        println!("  sha256:  {}", pulled.sha256);
+        println!("  bytes:   {}", pulled.bytes.len());
+        println!("  cached:  {}", cache.path_for(&pulled.sha256).display());
+        println!(
+            "  from cache: {}",
+            if pulled.from_cache { "yes" } else { "no" }
+        );
+        println!("verified: loads as a tool component");
+        println!(
+            "to pin this module, set `sha256: {}` on the tool",
+            pulled.sha256
+        );
+        Ok(ExitCode::SUCCESS)
+    })
+}
+
 fn manpage_command(dir: &Path) -> Result<ExitCode, String> {
     std::fs::create_dir_all(dir)
         .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;

@@ -5,8 +5,9 @@ call runs inside a `wasmtime` component instance whose only ambient authority
 comes from its configured capabilities.
 
 > **Status: pre-release (0.1.0 in progress).** The API may change before 0.1.0.
-> OCI module pulls and signature verification are not built yet. Modules are
-> loaded from local paths and pinned by SHA-256.
+> Modules load from local paths or from an anonymous OCI pull (`oci_ref`),
+> pinned by SHA-256 or by a digest reference. Signature verification is minisign
+> for local paths only.
 
 ## Security model
 

@@ -25,7 +25,7 @@ use tpt_mcpbox_audit::{AuditError, AuditLog};
 use tpt_mcpbox_policy::{Policy, PolicyInput};
 use tpt_mcpbox_protocol::prompts::Prompt;
 use tpt_mcpbox_protocol::resources::Resource;
-use tpt_mcpbox_protocol::tools::{CallToolResult, Tool};
+use tpt_mcpbox_protocol::tools::{CallToolResult, GuestTool, ResultFormat, Tool, decode_result};
 use tpt_mcpbox_proxy::{PolicyGate, ProxyError, UpstreamError};
 use tpt_mcpbox_runtime::{CancelToken, HostCheck, LoadedTool, ToolError};
 use tracing::Instrument as _;
@@ -40,6 +40,9 @@ pub enum RouterError {
     /// No tool with this name is in the catalog.
     #[error("unknown tool `{0}`")]
     UnknownTool(String),
+    /// A Wasm tool returned a result that does not match its declared format.
+    #[error("the tool returned a malformed result: {0}")]
+    MalformedResult(String),
     /// A tool with this exposed name is already registered.
     #[error("tool name `{0}` is already registered")]
     Conflict(String),
@@ -106,6 +109,7 @@ impl RouterError {
             Self::Tool(_) => "tool_error",
             Self::Encode(_) => "invalid_arguments",
             Self::TaskJoin(_) => "internal_error",
+            Self::MalformedResult(_) => "malformed_result",
             Self::TimedOut(_) => "timed_out",
             Self::Audit(_) => "audit_error",
             Self::UnknownResource(_) => "unknown_resource",
@@ -168,14 +172,15 @@ impl From<ProxyError> for RouterError {
 pub enum ToolOutput {
     /// Result from an upstream server, passed through unchanged.
     Upstream(CallToolResult),
-    /// Raw result string from a Wasm tool.
-    Wasm(String),
+    /// Result of a Wasm tool, decoded from its declared result format.
+    Wasm(CallToolResult),
 }
 
 pub(crate) enum Backend {
     Wasm {
         tool: Arc<LoadedTool>,
         tool_name: String,
+        format: ResultFormat,
     },
     Upstream {
         gate: Arc<PolicyGate>,
@@ -295,12 +300,14 @@ impl Router {
     }
 
     /// Registers a Wasm tool under the name in its descriptor.
-    pub fn add_wasm(&mut self, tool: Arc<LoadedTool>, descriptor: Tool) -> Result<(), RouterError> {
+    pub fn add_wasm(&mut self, tool: Arc<LoadedTool>, guest: GuestTool) -> Result<(), RouterError> {
         self.metrics.track_pool(&tool);
+        let descriptor = guest.tool;
         let exposed = descriptor.name.clone();
         let backend = Backend::Wasm {
             tool,
             tool_name: exposed.clone(),
+            format: guest.result,
         };
         self.insert(
             exposed,
@@ -553,7 +560,11 @@ impl Router {
                     .await?;
                 Ok(ToolOutput::Upstream(result))
             }
-            Backend::Wasm { tool, tool_name } => {
+            Backend::Wasm {
+                tool,
+                tool_name,
+                format,
+            } => {
                 let input = PolicyInput {
                     method: "tools/call".to_owned(),
                     caller: Some(caller.to_owned()),
@@ -584,30 +595,38 @@ impl Router {
                 })
                 .await
                 .map_err(|e| RouterError::TaskJoin(e.to_string()))?;
-                Ok(ToolOutput::Wasm(output?))
+                let raw = output?;
+                let result = decode_result(*format, &raw).map_err(RouterError::MalformedResult)?;
+                Ok(ToolOutput::Wasm(result))
             }
         }
     }
 }
 
 /// The check the runtime runs on each outbound request of a Wasm tool call.
-/// It refuses a request only when an explicit DSL deny rule names the host; see
-/// [`Policy::outbound_denial`].
+/// The whole policy engine decides on the request's host and URI (SR-01), with
+/// the call's caller, tool and arguments, and without spending quota again.
 fn outbound_check(policy: Arc<Policy>, caller: &str, tool: &str, arguments: Value) -> HostCheck {
     let caller = caller.to_owned();
     let tool = tool.to_owned();
-    Arc::new(move |host: &str| {
+    Arc::new(move |host: &str, uri: &str| {
         let input = PolicyInput {
             method: "tools/call".to_owned(),
             caller: Some(caller.clone()),
             tool: Some(tool.clone()),
             arguments: arguments.clone(),
             host: Some(host.to_owned()),
+            uris: vec![uri.to_owned()],
             ..PolicyInput::default()
         };
-        match policy.outbound_denial(&input) {
-            Some(rule_id) => Err(format!("refused by policy rule `{rule_id}`")),
-            None => Ok(()),
+        let decision = policy.evaluate_recheck(&input);
+        if decision.is_allowed() {
+            Ok(())
+        } else {
+            Err(match decision.rule_id {
+                Some(rule_id) => format!("refused by policy rule `{rule_id}`"),
+                None => format!("refused by policy: {}", decision.reason),
+            })
         }
     })
 }
@@ -767,13 +786,28 @@ mod tests {
         deny.id = "deny-evil".to_owned();
         deny.effect = Effect::Deny;
         deny.hosts = vec!["*.evil.test".to_owned()];
-        let check = outbound_check(policy(vec![deny]), "agent", "fetch", Value::Null);
+        let check = outbound_check(
+            policy(vec![deny, allow("fetch")]),
+            "agent",
+            "fetch",
+            Value::Null,
+        );
 
         assert_eq!(
-            check("x.evil.test").unwrap_err(),
+            check("x.evil.test", "https://x.evil.test/").unwrap_err(),
             "refused by policy rule `deny-evil`"
         );
-        assert!(check("api.github.com").is_ok());
+        assert!(check("api.github.com", "https://api.github.com/").is_ok());
+    }
+
+    #[test]
+    fn outbound_check_refuses_hosts_no_allow_rule_names() {
+        // The tool is admitted for api.github.com only.
+        let mut allowed = allow("fetch");
+        allowed.hosts = vec!["api.github.com".to_owned()];
+        let check = outbound_check(policy(vec![allowed]), "agent", "fetch", Value::Null);
+        assert!(check("api.github.com", "https://api.github.com/").is_ok());
+        assert!(check("169.254.169.254", "https://169.254.169.254/").is_err());
     }
 
     #[tokio::test]

@@ -17,8 +17,9 @@ Two evaluators compose into one `Policy`:
 1. **YAML DSL** (`Engine`). This is the default. Rules are declarative and
    reviewed alongside the configuration. Each rule has an `id`, an `effect`
    (`allow` or `deny`) and matchers such as the tool name.
-2. **Embedded Rego** (through [`regorus`](https://crates.io/crates/regorus), a
-   pure-Rust engine). Use this when a rule needs more logic than the DSL offers.
+2. **Embedded Rego**, through an in-crate interpreter for a documented subset of
+   Rego v1 (see `src/rego/parse.rs`). Use this when a rule needs more logic than
+   the DSL offers. Anything outside the subset is refused when the module loads.
 
 `Policy::from_config` builds the DSL-only policy. `Policy::from_config_with_rego`
 adds a Rego module. `Policy::reload` builds a new policy from a changed

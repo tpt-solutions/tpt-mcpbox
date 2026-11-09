@@ -61,6 +61,37 @@ and sign the module with `minisign -Sm file.wasm`. The signature must sit beside
 the module as `file.wasm.minisig`. A module that does not verify under the key is
 refused before it is compiled.
 
+
+### Module sources
+
+A tool names its module with exactly one of `wasm_path` (a local file) or
+`oci_ref` (an OCI registry reference):
+
+```yaml
+tools:
+  - name: github_search
+    oci_ref: oci://ghcr.io/tpt-solutions/mcpbox-github:1.0
+    sha256: "9f2c…"          # pins the module bytes (recommended)
+```
+
+- The registry must be named in the reference. Pulls are anonymous: a registry
+  that needs credentials is not supported yet.
+- A `@sha256:` digest in the reference pins the **manifest**. `sha256` pins the
+  **module**. With a tag and no `sha256`, the tool loads whatever the tag points
+  at and logs a warning, so pin one of the two.
+- Pulled modules are cached under `$MCPBOX_CACHE_DIR`, or the platform cache
+  directory. Each cache entry is named by its digest and re-checked on read.
+- A private registry takes credentials from a secret: `oci_auth: { secret: NAME }`,
+  where the secret's value is `username:password`. The credentials are sent only
+  to the registry's token endpoint, as Basic authentication, and never to a
+  redirect target. The value comes from the environment or the `.env` file,
+  never from the configuration file.
+- An image index is pulled through its `wasi` or `wasm` entry.
+- `minisign_key` is refused for `oci_ref`, because a signature has no file to
+  sit beside. Use `wasm_path` to verify a signature.
+- To fetch and check a module ahead of time, and get the digest to pin, run
+  `tpt-mcpbox pull oci://ghcr.io/tpt-solutions/mcpbox-github:1.0`.
+
 ## `upstreams`
 
 Each upstream is either a stdio child process or a Streamable HTTP endpoint,

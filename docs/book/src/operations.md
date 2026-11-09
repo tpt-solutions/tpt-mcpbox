@@ -53,3 +53,16 @@ tpt-mcpbox manpage ./man
 - Every other section is read at start. Restart the hub after changing it; the
   hub logs a warning when such an edit is seen.
 - Only one hub can write a given audit log at a time.
+
+## Pulling a tool module
+
+A tool that names an `oci_ref` is fetched when the hub starts. To fetch and check
+it ahead of time, and get the digest to pin, run:
+
+```sh
+tpt-mcpbox pull oci://ghcr.io/tpt-solutions/mcpbox-github:1.0
+```
+
+The command stores the module in the cache, loads it through the same loader
+`run` uses, and prints its `sha256`. Set that value as `sha256:` on the tool.
+Use `--cache-dir` or `MCPBOX_CACHE_DIR` to choose the cache location.

@@ -18,7 +18,6 @@ workspace = true
 [dependencies]
 tpt-mcpbox-config = { workspace = true }
 globset = { workspace = true }
-regorus = { workspace = true }
 anyhow = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }

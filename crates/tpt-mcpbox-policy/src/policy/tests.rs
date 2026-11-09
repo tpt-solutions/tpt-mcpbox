@@ -135,34 +135,62 @@ fn a_rejected_config_leaves_the_rules_in_force() {
     assert!(policy.evaluate(&call("search")).is_allowed());
 }
 
+/// The input for one outbound request of a tool call to `host`.
+fn outbound_input(tool: &str, host: &str) -> PolicyInput {
+    PolicyInput {
+        method: "tools/call".to_owned(),
+        tool: Some(tool.to_owned()),
+        host: Some(host.to_owned()),
+        uris: vec![format!("https://{host}/")],
+        ..PolicyInput::default()
+    }
+}
+
 #[test]
 fn outbound_deny_rules_refuse_only_the_hosts_they_name() {
     let mut deny = rule("deny-evil", Effect::Deny);
     deny.hosts = vec!["*.evil.test".to_owned()];
-    let mut allow = tool_rule("allow-tool", Effect::Allow, "fetch");
-    allow.hosts = Vec::new();
     let policy = Policy::from_config(&PolicyConfig {
-        rules: vec![deny, allow],
+        rules: vec![deny, tool_rule("allow-fetch", Effect::Allow, "fetch")],
         ..PolicyConfig::default()
     })
     .expect("compiles");
 
-    let outbound = |host: &str| PolicyInput {
-        method: "tools/call".to_owned(),
-        tool: Some("fetch".to_owned()),
-        host: Some(host.to_owned()),
-        ..PolicyInput::default()
-    };
-    assert_eq!(
-        policy.outbound_denial(&outbound("x.evil.test")).as_deref(),
-        Some("deny-evil")
+    let refused = policy.evaluate_recheck(&outbound_input("fetch", "x.evil.test"));
+    assert!(!refused.is_allowed());
+    assert_eq!(refused.rule_id.as_deref(), Some("deny-evil"));
+    assert!(
+        policy
+            .evaluate_recheck(&outbound_input("fetch", "api.github.com"))
+            .is_allowed()
     );
-    // No rule names this host, so the default does not refuse it.
-    assert_eq!(policy.outbound_denial(&outbound("api.github.com")), None);
 }
 
 #[test]
-fn outbound_denial_is_silent_in_dry_run() {
+fn an_allow_rule_limits_outbound_hosts_to_those_it_names() {
+    // SR-01: a tool admitted for one host must not reach another.
+    let mut allow = tool_rule("allow-fetch", Effect::Allow, "fetch");
+    allow.hosts = vec!["api.github.com".to_owned()];
+    let policy = Policy::from_config(&PolicyConfig {
+        rules: vec![allow],
+        ..PolicyConfig::default()
+    })
+    .expect("compiles");
+
+    assert!(
+        policy
+            .evaluate_recheck(&outbound_input("fetch", "api.github.com"))
+            .is_allowed()
+    );
+    let other = policy.evaluate_recheck(&outbound_input("fetch", "169.254.169.254"));
+    assert!(
+        !other.is_allowed(),
+        "no rule names this host, so the default refuses it"
+    );
+}
+
+#[test]
+fn outbound_decisions_are_reported_but_not_enforced_in_dry_run() {
     let mut deny = rule("deny-evil", Effect::Deny);
     deny.hosts = vec!["*.evil.test".to_owned()];
     let policy = Policy::from_config(&PolicyConfig {
@@ -171,13 +199,9 @@ fn outbound_denial_is_silent_in_dry_run() {
         ..PolicyConfig::default()
     })
     .expect("compiles");
-    let input = PolicyInput {
-        method: "tools/call".to_owned(),
-        tool: Some("fetch".to_owned()),
-        host: Some("x.evil.test".to_owned()),
-        ..PolicyInput::default()
-    };
-    assert_eq!(policy.outbound_denial(&input), None);
+    let decision = policy.evaluate_recheck(&outbound_input("fetch", "x.evil.test"));
+    assert!(decision.is_allowed(), "dry-run enforces nothing");
+    assert_eq!(decision.would_be, Effect::Deny);
 }
 
 fn tool_rule(id: &str, effect: Effect, tool: &str) -> Rule {
