@@ -47,7 +47,7 @@ constraints and reload wiring open); Phases 4–12 outstanding.
 
 - [x] `git init`; add `.gitignore` (Rust, `.env`, `target/`, `*.wasm` build output, OCI cache)
 - [x] Create Cargo workspace with member crate skeletons listed above (guest crates deferred to Phases 7/8)
-- [x] `rust-toolchain.toml`; set and document MSRV (**1.85**, enforced by the CI `msrv` job)
+- [x] `rust-toolchain.toml`; set and document MSRV (**1.95**, enforced by the CI `msrv` job; raised from 1.85 with wasmtime 48)
 - [x] Dual licensing: `LICENSE-MIT`, `LICENSE-APACHE`, `license = "MIT OR Apache-2.0"` in every `Cargo.toml`, copyright "TPT Solutions"
 - [x] `README.md` (overview, status, quickstart placeholder, license, contribution note)
 - [x] `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md` (disclosure policy), `CHANGELOG.md`
