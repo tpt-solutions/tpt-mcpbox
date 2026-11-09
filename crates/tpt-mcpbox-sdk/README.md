@@ -38,7 +38,11 @@ export_tools!(Greet);
   `GreetArgs`, including its doc comments.
 - Arguments are validated against that type before `run` is called. A wrong
   type comes back to the agent as a tool error that names the field.
-- `ToolResult::text` and `ToolResult::json` build the reply.
+- `ToolResult::text` and `ToolResult::json` build the reply. `ToolResult::image`
+  (base64 data and a MIME type) and `ToolResult::resource_text` (a URI, a MIME
+  type and text) return other content blocks, and `with_block` joins several
+  blocks into one reply. The SDK declares the `envelope-v1` result format, so the
+  host reads the blocks as MCP content.
 - Return `ToolError::new("...")` (or `?` on a `ToolError`) for a failure the
   agent should see. It reaches the agent with `isError: true`.
 
@@ -74,7 +78,7 @@ and use HTTPS. A refused request is returned as a tool error, not a panic.
 | Item | Purpose |
 |---|---|
 | `Tool` | Trait for one tool: `Args`, `NAME`, `DESCRIPTION` and `run` |
-| `ToolResult` | `text` and `json` build a successful reply |
+| `ToolResult` | `text`, `json`, `image`, `resource_text` and `with_block` build a successful reply |
 | `ToolError` | A failure the agent sees (`isError: true`). `new` builds one from a message. |
 | `export_tools!` | Turns a list of `Tool` types into the component's `describe` and `call` exports |
 | `http::get_json`, `http::post_json`, `http::get_json_with_headers` | HTTP helpers over `wasi:http`. Credentials are never set here: the host injects them. |

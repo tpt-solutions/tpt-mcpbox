@@ -59,6 +59,14 @@ pub struct AudioContent {
     pub annotations: Option<Annotations>,
 }
 
+/// An embedded resource block. MCP nests the body under `resource`:
+/// `{"type": "resource", "resource": {"uri": ..., "text": ...}}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EmbeddedResource {
+    /// The resource body.
+    pub resource: ResourceContents,
+}
+
 /// Inline textual resource contents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextResourceContents {
@@ -149,7 +157,7 @@ pub enum Content {
     Audio(AudioContent),
     /// Embedded resource body.
     #[serde(rename = "resource")]
-    Resource(ResourceContents),
+    Resource(EmbeddedResource),
     /// Link to a resource.
     #[serde(rename = "resource_link")]
     ResourceLink(ResourceLink),
@@ -197,7 +205,7 @@ impl Content {
             Self::Text(text) => text.text.len(),
             Self::Image(image) => image.data.len() + image.mime_type.len(),
             Self::Audio(audio) => audio.data.len() + audio.mime_type.len(),
-            Self::Resource(contents) => contents.size_hint(),
+            Self::Resource(embedded) => embedded.resource.size_hint(),
             Self::ResourceLink(link) => link.uri.len() + link.name.len(),
         }
     }
@@ -224,10 +232,12 @@ mod tests {
 
     #[test]
     fn resource_contents_are_untagged() {
-        let json =
-            r#"{"type":"resource","uri":"file:///a.txt","mimeType":"text/plain","text":"body"}"#;
+        let json = r#"{"type":"resource","resource":{"uri":"file:///a.txt","mimeType":"text/plain","text":"body"}}"#;
         let content: Content = serde_json::from_str(json).expect("parses");
-        let Content::Resource(ResourceContents::Text(text)) = &content else {
+        let Content::Resource(EmbeddedResource {
+            resource: ResourceContents::Text(text),
+        }) = &content
+        else {
             panic!("expected embedded text resource, got {content:?}");
         };
         assert_eq!(text.uri, "file:///a.txt");
@@ -236,9 +246,12 @@ mod tests {
 
     #[test]
     fn blob_resources_keep_their_payload() {
-        let json = r#"{"type":"resource","uri":"file:///a.bin","blob":"AA=="}"#;
+        let json = r#"{"type":"resource","resource":{"uri":"file:///a.bin","blob":"AA=="}}"#;
         let content: Content = serde_json::from_str(json).expect("parses");
-        let Content::Resource(ResourceContents::Blob(blob)) = &content else {
+        let Content::Resource(EmbeddedResource {
+            resource: ResourceContents::Blob(blob),
+        }) = &content
+        else {
             panic!("expected embedded blob resource");
         };
         assert_eq!(blob.blob, "AA==");

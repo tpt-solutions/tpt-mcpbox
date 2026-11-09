@@ -78,17 +78,19 @@ pub trait Tool {
     fn run(args: Self::Args) -> Result<ToolResult, ToolError>;
 }
 
-/// Text returned to the agent for a successful call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What a tool returns for a successful call: MCP content blocks.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ToolResult {
-    text: String,
+    content: Vec<Value>,
 }
 
 impl ToolResult {
     /// A plain-text result.
     #[must_use]
     pub fn text(text: impl Into<String>) -> Self {
-        Self { text: text.into() }
+        Self {
+            content: vec![json!({ "type": "text", "text": text.into() })],
+        }
     }
 
     /// A JSON result, rendered as compact JSON text.
@@ -102,10 +104,52 @@ impl ToolResult {
             .map_err(|error| ToolError::new(format!("cannot encode result: {error}")))
     }
 
-    /// The text that will be returned to the agent.
+    /// An image, as base64 `data` with its MIME type.
     #[must_use]
-    pub fn as_text(&self) -> &str {
-        &self.text
+    pub fn image(data_base64: impl Into<String>, mime_type: impl Into<String>) -> Self {
+        Self {
+            content: vec![json!({
+                "type": "image",
+                "data": data_base64.into(),
+                "mimeType": mime_type.into(),
+            })],
+        }
+    }
+
+    /// Embedded text resource, identified by `uri`.
+    #[must_use]
+    pub fn resource_text(
+        uri: impl Into<String>,
+        mime_type: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Self {
+        Self {
+            content: vec![json!({
+                "type": "resource",
+                "resource": {
+                    "uri": uri.into(),
+                    "mimeType": mime_type.into(),
+                    "text": text.into(),
+                },
+            })],
+        }
+    }
+
+    /// Several blocks, in order. Combine results by building them here.
+    #[must_use]
+    pub fn with_block(mut self, block: ToolResult) -> Self {
+        self.content.extend(block.content);
+        self
+    }
+
+    /// The text blocks, joined by newlines. Other blocks are left out.
+    #[must_use]
+    pub fn as_text(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -176,6 +220,7 @@ fn descriptor<T: Tool>() -> Value {
         "name": T::NAME,
         "description": T::DESCRIPTION,
         "input_schema": serde_json::to_value(schema).unwrap_or(Value::Null),
+        "result": "envelope-v1",
     })
 }
 
@@ -188,7 +233,7 @@ fn call<T: Tool>(arguments: &str) -> Result<String, String> {
     let args: T::Args = serde_json::from_str(source)
         .map_err(|error| format!("invalid arguments for `{}`: {error}", T::NAME))?;
     T::run(args)
-        .map(|result| result.text)
+        .map(|result| json!({ "content": result.content }).to_string())
         .map_err(|error| error.message)
 }
 

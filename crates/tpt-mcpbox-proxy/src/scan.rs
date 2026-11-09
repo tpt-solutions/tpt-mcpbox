@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use regex::{NoExpand, Regex};
 use serde_json::Value;
 use tpt_mcpbox_config::{ScanAction, ScanRule};
-use tpt_mcpbox_protocol::content::{Content, ResourceContents};
+use tpt_mcpbox_protocol::content::{Content, EmbeddedResource, ResourceContents};
 use tpt_mcpbox_protocol::prompts::GetPromptResult;
 use tpt_mcpbox_protocol::resources::ReadResourceResult;
 use tpt_mcpbox_protocol::tools::CallToolResult;
@@ -99,7 +99,9 @@ impl ResponseScanner {
     fn scan_content(&self, content: &mut Content) -> Result<(), Refused> {
         match content {
             Content::Text(text) => text.text = self.scan_str(&text.text)?.into_owned(),
-            Content::Resource(ResourceContents::Text(body)) => {
+            Content::Resource(EmbeddedResource {
+                resource: ResourceContents::Text(body),
+            }) => {
                 body.text = self.scan_str(&body.text)?.into_owned();
             }
             Content::ResourceLink(link) => {
