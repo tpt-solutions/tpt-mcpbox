@@ -6,6 +6,7 @@ name = "tpt-mcpbox-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
+license = "MIT OR Apache-2.0"
 
 [package.metadata]
 cargo-fuzz = true
@@ -38,6 +39,20 @@ bench = false
 [[bin]]
 name = "policy_input"
 path = "fuzz_targets/policy_input.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "descriptors"
+path = "fuzz_targets/descriptors.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rego_module"
+path = "fuzz_targets/rego_module.rs"
 test = false
 doc = false
 bench = false

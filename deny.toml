@@ -13,7 +13,30 @@ exclude-dev = false
 [advisories]
 # Do not ship code with known vulnerabilities. Ignored advisories must carry a
 # reason and an expiry.
-ignore = []
+ignore = [
+    # cargo-deny 0.20 has no expiry key, so each reason carries its review date.
+    # Accepted 2026-11-09 for the rustls-rustcrypto 0.0.2-alpha TLS provider, the
+    # only source of these crates (todo.md, Phase 13). Expires 2027-02-09: the
+    # provider is to be replaced, and the entries must be re-decided by then.
+    #
+    # rsa: Marvin timing attack on private-key operations. This client only
+    # verifies server signatures (public-key operations), so no private key is
+    # exposed on this path.
+    { id = "RUSTSEC-2023-0071", reason = "rsa via rustls-rustcrypto; only public-key verification is used; review by 2027-02-09" },
+    # paste: unmaintained, build-time proc macro. No safe upgrade exists.
+    { id = "RUSTSEC-2024-0436", reason = "paste via rustls-rustcrypto; build-time proc macro, unmaintained; review by 2027-02-09" },
+    # crypto-bigint: timing variability in constant-time operations, reached only
+    # through p256/p384 ECDSA verification (public data).
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint via rustls-rustcrypto p256/p384; ECDSA verification only; review by 2027-02-09" },
+    # rustls-webpki 0.102.8 (old) is used by rustls-rustcrypto only for
+    # signature-algorithm identifiers. Certificate path validation uses
+    # rustls-webpki 0.103.16 through rustls itself, which has these fixes.
+    { id = "RUSTSEC-2026-0049", reason = "old rustls-webpki 0.102 via rustls-rustcrypto; path validation uses 0.103; review by 2027-02-09" },
+    { id = "RUSTSEC-2026-0098", reason = "old rustls-webpki 0.102 via rustls-rustcrypto; path validation uses 0.103; review by 2027-02-09" },
+    { id = "RUSTSEC-2026-0099", reason = "old rustls-webpki 0.102 via rustls-rustcrypto; path validation uses 0.103; review by 2027-02-09" },
+    { id = "RUSTSEC-2026-0104", reason = "old rustls-webpki 0.102 via rustls-rustcrypto; path validation uses 0.103; review by 2027-02-09" },
+    { id = "RUSTSEC-2026-0382", reason = "old rustls-webpki 0.102 via rustls-rustcrypto; path validation uses 0.103; review by 2027-02-09" },
+]
 
 [licenses]
 # Every entry is a licence decision, and cargo-deny warns about unused ones.
@@ -21,8 +44,12 @@ ignore = []
 # part to be allowed here (e.g. `matchit`, a dependency of axum).
 allow = [
     "MIT",
-    "Apache-2.0",
+    # Apache-2.0 on its own is not allowed; the crates that need it are named in
+    # the exceptions below.
     "BSD-3-Clause",
+    # Required by `ryu` ("Apache-2.0 OR BSL-1.0"), a dependency of serde_json.
+    # Boost is OSI-approved and permissive.
+    "BSL-1.0",
     # Required by `unicode-ident` ("(MIT OR Apache-2.0) AND Unicode-3.0").
     "Unicode-3.0",
     # Required by Wasmtime's Cranelift crates.
@@ -35,7 +62,13 @@ allow = [
     "Zlib",
 ]
 confidence-threshold = 0.93
-exceptions = []
+# Per-crate licence exceptions, each with a reason. Dev-only crates that are never
+# shipped are listed here rather than allowed globally.
+# Fuzzing harness dependency of the `fuzz/` workspace only; never shipped.
+# Permissive NCSA (LLVM-derived) licence, on top of MIT OR Apache-2.0.
+[[licenses.exceptions]]
+crate = "libfuzzer-sys"
+allow = ["NCSA"]
 
 [bans]
 multiple-versions = "warn"
@@ -53,3 +86,28 @@ deny = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# Apache-2.0 crates accepted by name. Each is a dependency we do not control, and
+# a reason is recorded so that a later change to the tree is noticed.
+[[licenses.exceptions]]
+crate = "sync_wrapper"
+allow = ["Apache-2.0"]
+# Normal dependency of `axum` 0.8 (the HTTP transport). `axum` still depends on
+# it; revisit when a newer axum drops it.
+
+[[licenses.exceptions]]
+crate = "witx"
+allow = ["Apache-2.0"]
+# Build-time only, through `wiggle-generate` in upstream Wasmtime, which is kept
+# by decision (todo.md, Phase 13). Not in the shipped binary's runtime code.
+
+[[licenses.exceptions]]
+crate = "waki"
+allow = ["Apache-2.0"]
+# Guest SDK and example tools only (not the host binary). To be replaced with
+# raw `wit-bindgen` (todo.md, Phase 13).
+
+[[licenses.exceptions]]
+crate = "waki-macros"
+allow = ["Apache-2.0"]
+# As `waki`.

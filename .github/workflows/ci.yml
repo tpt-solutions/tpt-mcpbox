@@ -102,6 +102,18 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+      # Guest crates, the SDK and the fuzz harness are separate workspaces, so the
+      # root check does not cover their dependency licences.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: licences in every workspace
+        run: |
+          for d in tools/tpt-mcpbox-tool-fs tools/tpt-mcpbox-tool-github \
+                   crates/tpt-mcpbox-sdk crates/tpt-mcpbox-sdk/examples/hello \
+                   crates/tpt-mcpbox-runtime/tests/guest fuzz; do
+            (cd "$d" && cargo deny check licenses) || exit 1
+          done
       - run: cargo install cargo-audit --locked
       - run: cargo audit
 
@@ -150,7 +162,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [jsonrpc_parse, config_load, policy_input]
+        target: [jsonrpc_parse, config_load, policy_input, descriptors, rego_module]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
