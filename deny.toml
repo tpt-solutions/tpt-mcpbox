@@ -90,12 +90,6 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # Apache-2.0 crates accepted by name. Each is a dependency we do not control, and
 # a reason is recorded so that a later change to the tree is noticed.
 [[licenses.exceptions]]
-crate = "sync_wrapper"
-allow = ["Apache-2.0"]
-# Normal dependency of `axum` 0.8 (the HTTP transport). `axum` still depends on
-# it; revisit when a newer axum drops it.
-
-[[licenses.exceptions]]
 crate = "witx"
 allow = ["Apache-2.0"]
 # Build-time only, through `wiggle-generate` in upstream Wasmtime, which is kept

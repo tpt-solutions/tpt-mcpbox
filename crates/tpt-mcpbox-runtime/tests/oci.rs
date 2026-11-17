@@ -12,11 +12,11 @@ use std::future::IntoFuture;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use axum::body::Body;
-use axum::extract::{Request, State};
-use axum::http::{HeaderValue, StatusCode, header};
-use axum::response::Response;
+use http::{HeaderValue, StatusCode, header};
 use tpt_mcpbox_config::{Capabilities, Limits, RateLimit, SecretStore, ToolConfig};
+use tpt_mcpbox_http::Body;
+use tpt_mcpbox_http::Response;
+use tpt_mcpbox_http::{Request, State};
 use tpt_mcpbox_runtime::oci::{self, Cache, OciError, sha256_hex};
 use tpt_mcpbox_runtime::{PROBE_SHA256, PROBE_WASM, Runtime, ToolError};
 
@@ -92,7 +92,7 @@ async fn handle(State(fake): State<Arc<Fake>>, request: Request) -> Response {
             r#"Bearer realm="http://127.0.0.1:{}/token",service="fake-registry",scope="repository:tools/probe:pull""#,
             fake.port
         );
-        return Response::builder()
+        return http::Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header(
                 header::WWW_AUTHENTICATE,
@@ -130,7 +130,7 @@ async fn handle(State(fake): State<Arc<Fake>>, request: Request) -> Response {
         }
         if fake.redirect {
             // A relative redirect, which the client must resolve against the request.
-            return Response::builder()
+            return http::Response::builder()
                 .status(StatusCode::TEMPORARY_REDIRECT)
                 .header(header::LOCATION, format!("/cdn/sha256:{digest}"))
                 .body(Body::empty())
@@ -146,14 +146,14 @@ async fn handle(State(fake): State<Arc<Fake>>, request: Request) -> Response {
 }
 
 fn status(code: StatusCode) -> Response {
-    Response::builder()
+    http::Response::builder()
         .status(code)
         .body(Body::empty())
         .expect("response")
 }
 
 fn bytes(body: Vec<u8>) -> Response {
-    Response::builder()
+    http::Response::builder()
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .body(Body::from(body))
         .expect("response")
@@ -164,7 +164,7 @@ fn json(body: Vec<u8>) -> Response {
 }
 
 fn json_typed(body: Vec<u8>, content_type: &str) -> Response {
-    Response::builder()
+    http::Response::builder()
         .header(header::CONTENT_TYPE, content_type)
         .body(Body::from(body))
         .expect("response")
@@ -190,10 +190,10 @@ async fn registry(configure: impl FnOnce(&mut Fake)) -> (u16, Arc<Fake>) {
     };
     configure(&mut fake);
     let fake = Arc::new(fake);
-    let app = axum::Router::new()
+    let app = tpt_mcpbox_http::Router::new()
         .fallback(handle)
         .with_state(Arc::clone(&fake));
-    tokio::spawn(axum::serve(listener, app).into_future());
+    tokio::spawn(tpt_mcpbox_http::serve(listener, app).into_future());
     (port, fake)
 }
 
