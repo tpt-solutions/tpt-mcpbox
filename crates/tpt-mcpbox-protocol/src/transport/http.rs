@@ -26,14 +26,14 @@ use std::convert::Infallible;
 use std::fmt;
 use std::sync::Arc;
 
-use axum::Router;
-use axum::extract::{Request, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use http::{HeaderMap, HeaderValue, StatusCode, header};
 use serde_json::Value;
 use tokio::sync::{Mutex, broadcast};
+use tpt_mcpbox_http::get;
+use tpt_mcpbox_http::{App, Router};
+use tpt_mcpbox_http::{Event, KeepAlive, Sse};
+use tpt_mcpbox_http::{IntoResponse, Response};
+use tpt_mcpbox_http::{Request, State};
 
 use crate::jsonrpc::{ErrorCode, JSONRPC_VERSION, ServerMessage};
 use crate::server::{Dispatcher, Handler};
@@ -233,8 +233,8 @@ impl StreamableHttpServer {
         }
     }
 
-    /// Build the axum router; mount it wherever the caller likes.
-    pub fn router(&self) -> Router {
+    /// Build the HTTP router; mount it wherever the caller likes.
+    pub fn router(&self) -> App {
         Router::new()
             .route(
                 "/mcp",
@@ -242,9 +242,6 @@ impl StreamableHttpServer {
                     .post(self::post_message)
                     .delete(self::delete_session),
             )
-            .layer(axum::extract::DefaultBodyLimit::max(
-                self.state.options.max_payload_bytes,
-            ))
             .with_state(self.state.clone())
     }
 
@@ -319,7 +316,7 @@ fn error_body(code: ErrorCode, message: &str) -> Value {
 }
 
 fn json_error(status: StatusCode, code: ErrorCode, message: &str) -> Response {
-    (status, axum::Json(error_body(code, message))).into_response()
+    (status, tpt_mcpbox_http::Json(error_body(code, message))).into_response()
 }
 
 fn origin_rejected(state: &HttpState, headers: &HeaderMap) -> Option<Response> {
@@ -355,7 +352,7 @@ async fn post_message(State(state): State<Arc<HttpState>>, request: Request) -> 
         );
     }
 
-    let Ok(body) = axum::body::to_bytes(body, state.options.max_payload_bytes).await else {
+    let Ok(body) = tpt_mcpbox_http::to_bytes(body, state.options.max_payload_bytes).await else {
         return json_error(
             StatusCode::PAYLOAD_TOO_LARGE,
             ErrorCode::CONTENT_TOO_LARGE,
@@ -440,7 +437,7 @@ async fn post_message(State(state): State<Arc<HttpState>>, request: Request) -> 
         ),
     };
 
-    let mut response = (StatusCode::OK, axum::Json(body)).into_response();
+    let mut response = (StatusCode::OK, tpt_mcpbox_http::Json(body)).into_response();
     if is_new && let Ok(value) = HeaderValue::from_str(slot.id.as_str()) {
         response
             .headers_mut()
@@ -574,9 +571,8 @@ async fn delete_session(State(state): State<Arc<HttpState>>, request: Request) -
 mod tests {
     use std::sync::Arc;
 
-    use axum::body::Body;
-    use axum::http::Request as HttpRequest;
-    use tower::ServiceExt;
+    use http::Request as HttpRequest;
+    use tpt_mcpbox_http::Body;
 
     use super::*;
     use crate::jsonrpc::Request;
@@ -642,7 +638,7 @@ mod tests {
     }
 
     async fn body_json(response: Response) -> Value {
-        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        let bytes = tpt_mcpbox_http::to_bytes(response.into_body(), 1024 * 1024)
             .await
             .expect("body reads");
         if bytes.is_empty() {

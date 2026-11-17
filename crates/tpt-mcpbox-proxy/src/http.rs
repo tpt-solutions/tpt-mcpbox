@@ -433,12 +433,13 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 mod tests {
     use std::time::Duration;
 
-    use axum::Router;
-    use axum::body::Body;
-    use axum::http::{HeaderMap, StatusCode, header};
-    use axum::response::Response as AxumResponse;
-    use axum::routing::post;
+    use http::{HeaderMap, StatusCode, header};
     use serde_json::json;
+    use tpt_mcpbox_http::Body;
+    use tpt_mcpbox_http::Request as ServerRequest;
+    use tpt_mcpbox_http::Response as AxumResponse;
+    use tpt_mcpbox_http::Router;
+    use tpt_mcpbox_http::post;
 
     use super::*;
 
@@ -454,18 +455,27 @@ mod tests {
         OversizedSse,
     }
 
+    /// Reads a request body as text, for the fake servers.
+    async fn read_text(request: ServerRequest) -> String {
+        let bytes = tpt_mcpbox_http::to_bytes(request.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
     async fn serve(mode: Mode) -> String {
         async fn handler(
-            axum::extract::State(mode): axum::extract::State<Mode>,
-            headers: HeaderMap,
-            body: String,
+            tpt_mcpbox_http::State(mode): tpt_mcpbox_http::State<Mode>,
+            request: ServerRequest,
         ) -> AxumResponse {
+            let headers = request.headers().clone();
+            let body = read_text(request).await;
             let msg: Value = serde_json::from_str(&body).unwrap();
             let method = msg["method"].as_str().unwrap_or_default().to_owned();
 
             // Notifications get 202 with no body.
             if msg.get("id").is_none() {
-                return AxumResponse::builder()
+                return http::Response::builder()
                     .status(StatusCode::ACCEPTED)
                     .body(Body::empty())
                     .unwrap();
@@ -475,7 +485,7 @@ mod tests {
             let session_ok = method == "initialize"
                 || headers.get("mcp-session-id").and_then(|v| v.to_str().ok()) == Some("sess-1");
             if !session_ok {
-                return AxumResponse::builder()
+                return http::Response::builder()
                     .status(StatusCode::BAD_REQUEST)
                     .body(Body::from("missing session"))
                     .unwrap();
@@ -496,17 +506,17 @@ mod tests {
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
 
-            let mut builder = AxumResponse::builder().header("mcp-session-id", "sess-1");
+            let mut builder = http::Response::builder().header("mcp-session-id", "sess-1");
             if method == "tools/call" && matches!(mode, Mode::Oversized) {
                 let pad = "a".repeat(MAX_REPLY_BYTES);
-                return AxumResponse::builder()
+                return http::Response::builder()
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(format!("{{\"pad\":\"{pad}\"}}")))
                     .unwrap();
             }
             if method == "tools/call" && matches!(mode, Mode::OversizedSse) {
                 let pad = "a".repeat(MAX_REPLY_BYTES);
-                return AxumResponse::builder()
+                return http::Response::builder()
                     .header(header::CONTENT_TYPE, "text/event-stream")
                     .body(Body::from(format!("data: {pad}")))
                     .unwrap();
@@ -529,7 +539,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
+            tpt_mcpbox_http::serve(listener, app).await.unwrap();
         });
         format!("http://{addr}/mcp")
     }
@@ -541,22 +551,23 @@ mod tests {
     #[tokio::test]
     async fn abandoned_call_posts_cancellation() {
         async fn handler(
-            axum::extract::State(seen): axum::extract::State<
+            tpt_mcpbox_http::State(seen): tpt_mcpbox_http::State<
                 tokio::sync::mpsc::UnboundedSender<Value>,
             >,
-            body: String,
+            request: ServerRequest,
         ) -> AxumResponse {
+            let body = read_text(request).await;
             let msg: Value = serde_json::from_str(&body).unwrap();
             let _ = seen.send(msg.clone());
             if msg.get("id").is_none() {
-                return AxumResponse::builder()
+                return http::Response::builder()
                     .status(StatusCode::ACCEPTED)
                     .body(Body::empty())
                     .unwrap();
             }
             // The call is never answered in time; the caller gives up first.
             tokio::time::sleep(Duration::from_secs(5)).await;
-            AxumResponse::builder()
+            http::Response::builder()
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     json!({ "jsonrpc": "2.0", "id": msg["id"], "result": {} }).to_string(),
@@ -571,7 +582,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
+            tpt_mcpbox_http::serve(listener, app).await.unwrap();
         });
 
         let options = UpstreamOptions {

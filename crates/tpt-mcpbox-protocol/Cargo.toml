@@ -16,7 +16,7 @@ keywords = ["mcp","json-rpc","jsonrpc","streamable-http","stdio"]
 workspace = true
 
 [dependencies]
-axum = { workspace = true }
+tpt-mcpbox-http = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 serde = { workspace = true }
@@ -24,7 +24,6 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-tower = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 

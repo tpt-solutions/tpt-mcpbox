@@ -13,11 +13,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Request, State};
-use axum::http::{StatusCode, header};
-use axum::middleware::{self, Next};
-use axum::response::{IntoResponse, Response};
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use http::{HeaderValue, StatusCode, header};
 use serde_json::{Value, json};
 use tpt_mcpbox_audit::AuditLog;
 use tpt_mcpbox_config::Redactor;
@@ -28,6 +25,8 @@ use tpt_mcpbox_config::model::{
 use tpt_mcpbox_config::reload::{ReloadEvent, ReloadHandle};
 use tpt_mcpbox_config::secrets::{SecretStore, SecretString};
 use tpt_mcpbox_config::validate::{self, Severity, ValidationMode};
+use tpt_mcpbox_http::{IntoResponse, Response};
+use tpt_mcpbox_http::{Request, State};
 use tpt_mcpbox_policy::Policy;
 use tpt_mcpbox_protocol::Implementation;
 use tpt_mcpbox_protocol::model::{
@@ -486,22 +485,24 @@ async fn serve_metrics(
     listener: tokio::net::TcpListener,
     metrics: Arc<Metrics>,
 ) -> Result<(), String> {
-    let app = axum::Router::new().route(
-        "/metrics",
-        axum::routing::get(move || {
-            let metrics = Arc::clone(&metrics);
-            async move {
-                (
-                    [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
-                    metrics.render(),
-                )
-            }
-        }),
-    );
+    let app = tpt_mcpbox_http::Router::new()
+        .route(
+            "/metrics",
+            tpt_mcpbox_http::get(move |_: State<()>, _: Request| {
+                let metrics = Arc::clone(&metrics);
+                async move {
+                    (
+                        [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+                        metrics.render(),
+                    )
+                }
+            }),
+        )
+        .with_state(());
     if let Ok(addr) = listener.local_addr() {
         tracing::info!(%addr, "serving Prometheus metrics");
     }
-    axum::serve(listener, app)
+    tpt_mcpbox_http::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|error| format!("metrics transport failed: {error}"))
@@ -577,12 +578,12 @@ async fn serve_http(
     let mut app = server.router();
     let authenticated = authorization.is_some();
     if let Some(expected) = authorization {
-        app = app.layer(middleware::from_fn_with_state(expected, require_bearer));
+        app = app.guard(move |request| bearer_rejection(&expected, request));
     }
     if let Ok(addr) = listener.local_addr() {
         tracing::info!(%addr, authenticated, "serving MCP over Streamable HTTP");
     }
-    axum::serve(listener, app)
+    tpt_mcpbox_http::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|error| format!("http transport failed: {error}"))
@@ -627,25 +628,22 @@ fn record_secret_bindings(log: Option<&AuditLog>, config: &Config) -> Result<(),
 /// Rejects requests whose `Authorization` header is not the configured bearer
 /// value. The check is constant-time, so the response timing does not reveal
 /// how much of the token matched.
-async fn require_bearer(
-    State(expected): State<Arc<SecretString>>,
-    request: Request,
-    next: Next,
-) -> Response {
+/// The guard that runs before routing: `None` lets the request through, and a
+/// `401` with a `WWW-Authenticate` challenge answers it otherwise.
+fn bearer_rejection(expected: &SecretString, request: &Request) -> Option<Response> {
     let presented = request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
-    if authorized(&expected, presented) {
-        next.run(request).await
-    } else {
-        (
-            StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, "Bearer")],
-            "a valid bearer token is required",
-        )
-            .into_response()
+    if authorized(expected, presented) {
+        return None;
     }
+    let mut response =
+        (StatusCode::UNAUTHORIZED, "a valid bearer token is required").into_response();
+    response
+        .headers_mut()
+        .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+    Some(response)
 }
 
 /// `true` when `presented` is exactly the expected `Authorization` value.

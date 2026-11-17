@@ -20,7 +20,8 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-axum = { workspace = true }
+tpt-mcpbox-http = { workspace = true }
+http = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 clap_mangen = { workspace = true }

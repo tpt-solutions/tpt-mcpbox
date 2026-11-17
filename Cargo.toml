@@ -4,6 +4,7 @@ members = [
     "crates/tpt-mcpbox-audit",
     "crates/tpt-mcpbox-cli",
     "crates/tpt-mcpbox-config",
+    "crates/tpt-mcpbox-http",
     "crates/tpt-mcpbox-policy",
     "crates/tpt-mcpbox-protocol",
     "crates/tpt-mcpbox-proxy",
@@ -35,10 +36,10 @@ tpt-mcpbox-runtime = { path = "crates/tpt-mcpbox-runtime", version = "0.1.0" }
 tpt-mcpbox-proxy = { path = "crates/tpt-mcpbox-proxy", version = "0.1.0" }
 tpt-mcpbox-router = { path = "crates/tpt-mcpbox-router", version = "0.1.0" }
 tpt-mcpbox-audit = { path = "crates/tpt-mcpbox-audit", version = "0.1.0" }
+tpt-mcpbox-http = { path = "crates/tpt-mcpbox-http", version = "0.1.0" }
 
 # third-party
 async-trait = "0.1"
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "macros", "tokio"] }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 clap_mangen = "0.3"
