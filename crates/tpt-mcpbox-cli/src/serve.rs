@@ -937,9 +937,14 @@ policy:
     /// The `fake_upstream` example, built next to the test binary. A plain
     /// `cargo test -p tpt-mcpbox-cli` builds it; a name-filtered run may not.
     fn fake_upstream() -> std::path::PathBuf {
-        let mut dir = std::env::current_exe().expect("test binary path");
-        dir.pop(); // deps
-        dir.pop(); // debug
+        // The test binary may sit in `target/debug/build/<pkg>/out`, not in
+        // `target/debug/deps`, so the layout is not walked up from it. Examples are
+        // always built into the workspace's `target/debug/examples`.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("debug");
         let path = dir
             .join("examples")
             .join(format!("fake_upstream{}", std::env::consts::EXE_SUFFIX));
