@@ -99,13 +99,13 @@ impl HttpClient {
             })
             .collect::<Result<Vec<_>, UpstreamError>>()?;
 
-        // Pure-Rust TLS: rustls with rustls-rustcrypto, so no `ring` (todo.md,
+        // Pure-Rust TLS: rustls with tpt-crypto-rustls, so no `ring` (todo.md,
         // Phase 13). Trust roots are the bundled Mozilla set, as before.
         let roots = rustls::RootCertStore {
             roots: webpki_roots::TLS_SERVER_ROOTS.into(),
         };
         let tls = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
-            rustls_rustcrypto::provider(),
+            tpt_crypto_rustls::provider(),
         ))
         .with_safe_default_protocol_versions()
         .map_err(|e| UpstreamError::Unsupported(format!("TLS setup: {e}")))?

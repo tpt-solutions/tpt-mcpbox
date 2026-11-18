@@ -3,8 +3,8 @@
 
 //! The TLS client configuration shared by outbound requests and OCI pulls.
 //!
-//! Crypto comes from `rustls-rustcrypto`, which is pure Rust. The `ring`
-//! provider is not used anywhere in the dependency tree (todo.md, Phase 13).
+//! Crypto comes from `tpt-crypto-rustls`, which is pure Rust and client-only. The
+//! `ring` provider is not used anywhere in the dependency tree (todo.md, Phase 13).
 //! Trust roots are the bundled Mozilla set, so results do not depend on the
 //! host's certificate store.
 
@@ -19,7 +19,7 @@ pub(crate) fn client_config() -> Arc<ClientConfig> {
         let roots = RootCertStore {
             roots: webpki_roots::TLS_SERVER_ROOTS.into(),
         };
-        let config = ClientConfig::builder_with_provider(Arc::new(rustls_rustcrypto::provider()))
+        let config = ClientConfig::builder_with_provider(Arc::new(tpt_crypto_rustls::provider()))
             .with_safe_default_protocol_versions()
             // The provider supports the default protocol versions by construction.
             .unwrap_or_else(|error| panic!("TLS provider lacks default versions: {error}"))

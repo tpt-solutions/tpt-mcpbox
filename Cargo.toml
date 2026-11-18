@@ -50,7 +50,9 @@ hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 # TLS uses a pure-Rust crypto provider; `ring` is not allowed (see todo.md, Phase 13).
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "logging"] }
-rustls-rustcrypto = "0.0.2-alpha"
+# Pure-Rust TLS provider built on tpt-crypto. It replaces rustls-rustcrypto 0.0.2-alpha,
+# whose advisories it removes from the shipped tree. Client side only, and not audited.
+tpt-crypto-rustls = { path = "../tpt-crypto-rustls" }
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "logging"] }
 webpki-roots = "1"
 wasmtime = { version = "48", default-features = false, features = ["cranelift", "component-model", "wat", "std", "runtime", "pooling-allocator", "async"] }

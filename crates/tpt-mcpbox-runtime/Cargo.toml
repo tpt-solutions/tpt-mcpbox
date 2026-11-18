@@ -33,7 +33,7 @@ base64 = "0.22"
 http-body = "1"
 http-body-util = "0.1"
 rustls = { workspace = true }
-rustls-rustcrypto = { workspace = true }
+tpt-crypto-rustls = { workspace = true }
 tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }
 thiserror = { workspace = true }
