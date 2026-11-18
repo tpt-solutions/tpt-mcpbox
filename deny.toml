@@ -14,18 +14,11 @@ exclude-dev = false
 # Do not ship code with known vulnerabilities. Ignored advisories must carry a
 # reason and an expiry.
 ignore = [
-    # cargo-deny 0.20 has no expiry key, so each reason carries its review date.
-    #
-    # rsa 0.9.10 is shipped through tpt-crypto-rustls, which the TLS client uses.
-    # It verifies server signatures only (public-key operations), so the Marvin
-    # timing attack on private-key operations does not reach this code. The fix is
-    # rsa 0.10, which needs digest 0.11 support in tpt-crypto. Re-decide by
-    # 2027-02-09.
-    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9 via tpt-crypto-rustls; verification only, no private-key operations; upgrade needs tpt-crypto digest 0.11; review by 2027-02-09" },
-    #
-    # The rustls-rustcrypto 0.0.2-alpha provider and its advisories (paste,
-    # crypto-bigint, and old rustls-webpki 0.102) were removed when this client
-    # moved to tpt-crypto-rustls, so their entries are gone.
+    # No advisories are ignored. The rustls-rustcrypto 0.0.2-alpha provider and its
+    # advisories (paste, crypto-bigint, old rustls-webpki 0.102) left the shipped
+    # tree when this client moved to tpt-crypto-rustls. RUSTSEC-2023-0071 (rsa 0.9)
+    # is fixed in the shipped build, since tpt-crypto-rustls uses rsa 0.10 (pinned
+    # to e30657b).
 ]
 
 [licenses]
