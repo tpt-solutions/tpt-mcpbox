@@ -52,7 +52,8 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "logging"] }
 # Pure-Rust TLS provider built on tpt-crypto. It replaces rustls-rustcrypto 0.0.2-alpha,
 # whose advisories it removes from the shipped tree. Client side only, and not audited.
-tpt-crypto-rustls = { path = "../tpt-crypto-rustls" }
+# Pinned to a commit so CI builds the same provider as this repo was tested with.
+tpt-crypto-rustls = { git = "https://github.com/tpt-solutions/tpt-crypto-rustls", rev = "1827ad7f736910b79d966baf3e7e88d7a2c1fb5a" }
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "logging"] }
 webpki-roots = "1"
 wasmtime = { version = "48", default-features = false, features = ["cranelift", "component-model", "wat", "std", "runtime", "pooling-allocator", "async"] }
