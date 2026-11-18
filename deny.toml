@@ -15,27 +15,17 @@ exclude-dev = false
 # reason and an expiry.
 ignore = [
     # cargo-deny 0.20 has no expiry key, so each reason carries its review date.
-    # Accepted 2026-11-09 for the rustls-rustcrypto 0.0.2-alpha TLS provider, the
-    # only source of these crates (todo.md, Phase 13). Expires 2027-02-09: the
-    # provider is to be replaced, and the entries must be re-decided by then.
     #
-    # rsa: Marvin timing attack on private-key operations. This client only
-    # verifies server signatures (public-key operations), so no private key is
-    # exposed on this path.
-    { id = "RUSTSEC-2023-0071", reason = "rsa via rustls-rustcrypto; only public-key verification is used; review by 2027-02-09" },
-    # paste: unmaintained, build-time proc macro. No safe upgrade exists.
-    { id = "RUSTSEC-2024-0436", reason = "paste via rustls-rustcrypto; build-time proc macro, unmaintained; review by 2027-02-09" },
-    # crypto-bigint: timing variability in constant-time operations, reached only
-    # through p256/p384 ECDSA verification (public data).
-    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint via rustls-rustcrypto p256/p384; ECDSA verification only; review by 2027-02-09" },
-    # rustls-webpki 0.102.8 (old) is used by rustls-rustcrypto only for
-    # signature-algorithm identifiers. Certificate path validation uses
-    # rustls-webpki 0.103.16 through rustls itself, which has these fixes.
-    { id = "RUSTSEC-2026-0049", reason = "old rustls-webpki 0.102 via rustls-rustcrypto; path validation uses 0.103; review by 2027-02-09" },
-    { id = "RUSTSEC-2026-0098", reason = "old rustls-webpki 0.102 via rustls-rustcrypto; path validation uses 0.103; review by 2027-02-09" },
-    { id = "RUSTSEC-2026-0099", reason = "old rustls-webpki 0.102 via rustls-rustcrypto; path validation uses 0.103; review by 2027-02-09" },
-    { id = "RUSTSEC-2026-0104", reason = "old rustls-webpki 0.102 via rustls-rustcrypto; path validation uses 0.103; review by 2027-02-09" },
-    { id = "RUSTSEC-2026-0382", reason = "old rustls-webpki 0.102 via rustls-rustcrypto; path validation uses 0.103; review by 2027-02-09" },
+    # rsa 0.9.10 is shipped through tpt-crypto-rustls, which the TLS client uses.
+    # It verifies server signatures only (public-key operations), so the Marvin
+    # timing attack on private-key operations does not reach this code. The fix is
+    # rsa 0.10, which needs digest 0.11 support in tpt-crypto. Re-decide by
+    # 2027-02-09.
+    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9 via tpt-crypto-rustls; verification only, no private-key operations; upgrade needs tpt-crypto digest 0.11; review by 2027-02-09" },
+    #
+    # The rustls-rustcrypto 0.0.2-alpha provider and its advisories (paste,
+    # crypto-bigint, and old rustls-webpki 0.102) were removed when this client
+    # moved to tpt-crypto-rustls, so their entries are gone.
 ]
 
 [licenses]
